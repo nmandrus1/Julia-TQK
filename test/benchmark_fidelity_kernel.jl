@@ -11,9 +11,10 @@ function profile_kernel(num_qubits::Int = 4, num_features::Int = 6, num_layers::
 
     kernel = FidelityKernel(reup, use_cache=true, parallel=false)
     X = rand(500, num_features)
-    K = zeros(500, 500)
-
-    @profile for i in 1:25 evaluate!(K, kernel, X) end
+    for i in 1:100
+        K = zeros(500, 500)
+        @profile evaluate!(K, kernel, X)
+    end
 end
 
 
