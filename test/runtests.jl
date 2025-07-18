@@ -1,62 +1,165 @@
 using Test
 using LinearAlgebra
 using Statistics
-using TQK
 using Yao, YaoBlocks
+using Random
 
-# Utility functions for testing and validation
-"""
-    is_positive_semidefinite(K::Matrix; tol=1e-10)
+using TQK
 
-Check if kernel matrix is positive semi-definite.
-"""
+# Utility functions
 function is_positive_semidefinite(K::Matrix; tol=1e-10)
     eigenvalues = eigvals(Symmetric(K))
     return all(λ -> λ >= -tol, eigenvalues)
 end
 
-"""
-    kernel_alignment(K1::Matrix, K2::Matrix)
-
-Compute kernel alignment between two kernel matrices.
-"""
 function kernel_alignment(K1::Matrix, K2::Matrix)
     return tr(K1 * K2) / (sqrt(tr(K1 * K1)) * sqrt(tr(K2 * K2)))
 end
 
-# Test suite
-@testset "TQK Test Suite" begin
-    @testset "FidelityKernel Tests" begin
-        # Simple test feature map
-        function test_feature_map(x::Vector, params)
-            n_qubits = 2
-            circuit = chain(n_qubits)
-            circuit = chain(circuit, put(n_qubits, 1 => Ry(x[1])))
-            if length(x) > 1
-                circuit = chain(circuit, put(n_qubits, 2 => Ry(x[2])))
-            end
-            circuit = chain(circuit, control(1, 2 => X))
-            return circuit
+@testset "Quantum Kernel Tests" begin
+    
+    @testset "ReuploadingCircuit Tests" begin
+        @testset "Construction" begin
+            n_qubits_val = 3
+            n_features_val = 4
+            n_layers = 2
+            
+            fm = ReuploadingCircuit(n_qubits_val, n_features_val, n_layers, linear)
+            
+            @test n_qubits(fm) == n_qubits_val
+            @test n_features(fm) == n_features_val
+            @test n_parameters(fm) == nparameters(fm.circuit)
+            
+            # Check initialization
+            @test all(fm.weights .== 0.0)
+            @test all(fm.biases .== 0.0)
+            @test length(fm.gate_features) == n_parameters(fm)
         end
         
-        # Create kernel
-        kernel = FidelityKernel(test_feature_map, 2, nothing)
+        @testset "Different entanglement strategies" begin
+            n_qubits_val = 4
+            n_features_val = 2
+            n_layers = 2
+            
+            for strategy in [linear, all_to_all, alternating]
+                fm = ReuploadingCircuit(n_qubits_val, n_features_val, n_layers, strategy)
+                @test n_qubits(fm) == n_qubits_val
+                @test n_features(fm) == n_features_val
+            end
+        end
         
-        @testset "Single kernel evaluation" begin
+        @testset "Parameter assignment" begin
+            fm = ReuploadingCircuit(2, 3, 1, linear)
+            n_params = n_parameters(fm)
+            
+            # Test assign_params! with weights and biases
+            weights = rand(n_params)
+            biases = rand(n_params)
+            assign_params!(fm, weights, biases)
+            
+            @test fm.weights == weights
+            @test fm.biases == biases
+            
+            # Test get_params
+            w, b = get_params(fm)
+            @test w == weights
+            @test b == biases
+        end
+        
+        @testset "Random parameter initialization" begin
+            fm = ReuploadingCircuit(2, 3, 1, linear)
+            
+            # Test with default range
+            assign_random_params!(fm, seed=42)
+            @test all(-π .<= fm.weights .<= π)
+            @test all(-π .<= fm.biases .<= π)
+            
+            # Test with custom range
+            assign_random_params!(fm, (0.0, 1.0), seed=42)
+            @test all(0.0 .<= fm.weights .<= 1.0)
+            @test all(0.0 .<= fm.biases .<= 1.0)
+            
+            # Test reproducibility
+            fm2 = ReuploadingCircuit(2, 3, 1, linear)
+            assign_random_params!(fm2, seed=42)
+            assign_random_params!(fm, seed=42)
+            @test fm.weights == fm2.weights
+            @test fm.biases == fm2.biases
+        end
+        
+        @testset "Angle computation" begin
+            fm = ReuploadingCircuit(2, 2, 1, linear)
+            
+            # Set known parameters
+            weights = [1.0, 2.0, 3.0, 4.0]
+            biases = [0.1, 0.2, 0.3, 0.4]
+            assign_params!(fm, weights, biases)
+            
+            # Test angle computation
+            x = [0.5, 0.3]
+            angles = compute_angles(fm, x)
+            
+            # Verify angles are computed correctly
+            for i in 1:length(angles)
+                expected = weights[i] * x[fm.gate_features[i]] + biases[i]
+                @test angles[i] ≈ expected
+            end
+        end
+        
+        @testset "Input mapping" begin
+            fm = ReuploadingCircuit(2, 2, 1, linear)
+            assign_random_params!(fm, seed=42)
+            
+            x = rand(2)
+            
+            # Test that map_inputs! modifies the circuit
+            original_params = parameters(fm.circuit)
+            map_inputs!(fm, x)
+            new_params = parameters(fm.circuit)
+            
+            @test length(original_params) == length(new_params)
+            @test !all(original_params .== new_params)  # Parameters should change
+        end
+    end
+    
+    @testset "FidelityKernel Tests" begin
+        @testset "Basic kernel evaluation" begin
+            fm = ReuploadingCircuit(2, 2, 1, linear)
+            assign_random_params!(fm, seed=42)
+            
+            kernel = FidelityKernel(fm, use_cache=false)
+            
             x = [0.5, 0.3]
             y = [0.7, 0.2]
             
+            # Test kernel value is in valid range
             k_val = evaluate(kernel, x, y)
             @test 0 <= k_val <= 1
             
-            # Self-similarity should be close to 1
+            # Test self-similarity
             k_self = evaluate(kernel, x, x)
             @test k_self ≈ 1.0 atol=1e-10
+            
+            # Test symmetry
+            k_xy = evaluate(kernel, x, y)
+            k_yx = evaluate(kernel, y, x)
+            @test k_xy ≈ k_yx atol=1e-10
         end
         
         @testset "Kernel matrix properties" begin
-            X = rand(2, 5)  # 5 samples
+            fm = ReuploadingCircuit(3, 2, 2, linear)
+            assign_random_params!(fm, seed=42)
+            
+            kernel = FidelityKernel(fm, use_cache=false)
+            
+            # Generate test data
+            n_samples = 5
+            X = rand(2, n_samples)
+            
             K = evaluate(kernel, X)
+            
+            # Check dimensions
+            @test size(K) == (n_samples, n_samples)
             
             # Check symmetry
             @test K ≈ K' atol=1e-10
@@ -64,17 +167,31 @@ end
             # Check positive semi-definite
             @test is_positive_semidefinite(K)
             
-            # Check diagonal elements
-            for i in 1:size(K, 1)
+            # Check diagonal elements (self-similarity)
+            for i in 1:n_samples
                 @test K[i, i] ≈ 1.0 atol=1e-10
+            end
+            
+            # Check off-diagonal elements
+            for i in 1:n_samples, j in 1:n_samples
+                if i != j
+                    @test 0 <= K[i, j] <= 1
+                end
             end
         end
         
-        @testset "Two dataset kernel" begin
-            X_train = rand(2, 4)
-            X_test = rand(2, 3)
+        @testset "Two dataset kernel matrix" begin
+            fm = ReuploadingCircuit(2, 3, 1, linear)
+            assign_random_params!(fm, seed=42)
+            
+            kernel = FidelityKernel(fm, use_cache=false)
+            
+            X_train = rand(3, 4)
+            X_test = rand(3, 3)
             
             K = evaluate(kernel, X_train, X_test)
+            
+            # Check dimensions
             @test size(K) == (4, 3)
             
             # Verify individual elements
@@ -84,127 +201,100 @@ end
             end
         end
         
-        @testset "Caching" begin
-            kernel_cached = FidelityKernel(test_feature_map, 2, nothing, use_cache=true)
+        @testset "Caching functionality" begin
+            fm = ReuploadingCircuit(2, 2, 1, linear)
+            assign_random_params!(fm, seed=42)
+            
+            kernel = FidelityKernel(fm, use_cache=true, cache_size=10)
             
             x = [0.5, 0.3]
             y = [0.7, 0.2]
             
             # First evaluation
-            k1 = evaluate(kernel_cached, x, y)
+            k1 = evaluate(kernel, x, y)
             
-            # Second evaluation (should use cache)
-            k2 = evaluate(kernel_cached, x, y)
+            # Check cache has the value
+            @test haskey(kernel.cache, (x, y))
             
+            # Second evaluation should use cache
+            k2 = evaluate(kernel, x, y)
             @test k1 == k2
             
             # Clear cache
-            clear_cache!(kernel_cached)
+            clear_cache!(kernel)
+            @test isempty(kernel.cache)
+        end
+        
+        @testset "Edge cases" begin
+            # Single qubit, single feature
+            fm = ReuploadingCircuit(1, 1, 1, linear)
+            assign_random_params!(fm, seed=42)
+            kernel = FidelityKernel(fm, use_cache=false)
+            
+            x = [0.5]
+            k = evaluate(kernel, x, x)
+            @test k ≈ 1.0 atol=1e-10
+            
+            # Zero input
+            fm2 = ReuploadingCircuit(2, 2, 1, linear)
+            assign_random_params!(fm2, seed=42)
+            kernel2 = FidelityKernel(fm2, use_cache=false)
+            
+            x_zero = [0.0, 0.0]
+            k_zero = evaluate(kernel2, x_zero, x_zero)
+            @test k_zero ≈ 1.0 atol=1e-10
         end
     end
     
-    @testset "Reuploading Circuit Tests" begin
-        @testset "Circuit Construction" begin
-            opts = ReuploadBuilderOpts(3, 4, 2, linear)
-            circuit, params = build_reuploading_circuit(opts)
+    @testset "Integration Tests" begin
+        @testset "Different circuit configurations" begin
+            configs = [
+                (n_qubits=2, n_features=2, n_layers=1, ent=linear),
+                (n_qubits=3, n_features=4, n_layers=2, ent=linear),
+                (n_qubits=4, n_features=2, n_layers=3, ent=all_to_all),
+            ]
             
-            # Check parameter counts
-            shapes = get_parameter_shapes(params)
-            @test shapes.n_weights > 0
-            @test shapes.n_biases > 0
-            @test shapes.n_inputs == 4
-            
-            # Check circuit properties
-            @test nqubits(circuit) == 3
-        end
-        
-        @testset "Parameter Initialization" begin
-            opts = ReuploadBuilderOpts(2, 3, 1, linear)
-            circuit, params = build_reuploading_circuit(opts)
-            
-            w_init, θ_init = random_parameters(params, seed=42)
-            
-            shapes = get_parameter_shapes(params)
-            @test length(w_init) == shapes.n_weights
-            @test length(θ_init) == shapes.n_biases
-            
-            # Check values are in expected range
-            @test all(w -> -pi <= w <= pi, w_init)
-            @test all(θ -> -pi <= θ <= pi, θ_init)
-        end
-    end
-end
-
-# Performance benchmarking function (not part of test suite)
-function benchmark_kernel(; n_samples=10, n_features=4, n_qubits=4)
-    println("\n" * "="^60)
-    println("Benchmarking FidelityKernel")
-    println("Parameters: $n_samples samples, $n_features features, $n_qubits qubits")
-    println("="^60)
-    
-    # Generate random data
-    X = rand(n_features, n_samples)
-    
-    # Create a more realistic feature map using reuploading circuit
-    function reupload_feature_map(x::Vector, params)
-        # Simple reuploading circuit for benchmarking
-        circuit = chain(n_qubits)
-        
-        # Data encoding layer
-        for (i, xi) in enumerate(x)
-            if i <= n_qubits
-                circuit = chain(circuit, put(n_qubits, i => Ry(2π * xi)))
+            for config in configs
+                fm = ReuploadingCircuit(config.n_qubits, config.n_features, 
+                                      config.n_layers, config.ent)
+                assign_random_params!(fm, seed=42)
+                kernel = FidelityKernel(fm, use_cache=false)
+                
+                # Generate test data
+                X = rand(config.n_features, 3)
+                K = evaluate(kernel, X)
+                
+                @test is_positive_semidefinite(K)
+                @test all(diag(K) .≈ 1.0)
             end
-        end
-        
-        # Entangling layer
-        for i in 1:(n_qubits-1)
-            circuit = chain(circuit, control(i, i+1 => X))
-        end
-        
-        # Second encoding layer
-        for (i, xi) in enumerate(x)
-            if i <= n_qubits
-                circuit = chain(circuit, put(n_qubits, i => Rz(2π * xi)))
-            end
-        end
-        
-        return circuit
+        end       
     end
     
-    # Create kernel
-    kernel = FidelityKernel(reupload_feature_map, n_qubits, nothing, parallel=true)
-    
-    # Warm-up
-    println("\nWarming up...")
-    evaluate(kernel, X[:, 1:min(2, n_samples)])
-    
-    # Benchmark
-    println("\nComputing full kernel matrix...")
-    @time K = evaluate(kernel, X)
-    
-    println("\nKernel matrix statistics:")
-    println("  Size: $(size(K))")
-    println("  Min value: $(round(minimum(K), digits=6))")
-    println("  Max value: $(round(maximum(K), digits=6))")
-    println("  Mean diagonal: $(round(mean(diag(K)), digits=6))")
-    println("  Is PSD: $(is_positive_semidefinite(K))")
-    
-    # Check condition number
-    cond_num = cond(K)
-    println("  Condition number: $(round(cond_num, sigdigits=3))")
-    
-    return K
-end
-
-# Run tests if this file is executed directly
-if abspath(PROGRAM_FILE) == @__FILE__
-    # Run the test suite
-    println("Running TQK test suite...")
-    
-    # Optionally run a small benchmark after tests
-    if get(ENV, "RUN_BENCHMARK", "false") == "true"
-        println("\nRunning benchmark...")
-        K = benchmark_kernel(n_samples=5, n_features=3, n_qubits=3)
+    @testset "Performance Benchmarks" begin
+        @testset "Kernel matrix computation time" begin
+            fm = ReuploadingCircuit(3, 3, 2, linear)
+            assign_random_params!(fm, seed=42)
+            kernel = FidelityKernel(fm, use_cache=true)
+            
+            # Small dataset
+            X_small = rand(3, 10)
+            @time K_small = evaluate(kernel, X_small)
+            @test is_positive_semidefinite(K_small)
+            
+            # Compare cached vs uncached
+            clear_cache!(kernel)
+            kernel_nocache = FidelityKernel(fm, use_cache=false)
+            
+            x, y = X_small[:, 1], X_small[:, 2]
+            
+            # Time cached evaluation
+            evaluate(kernel, x, y)  # First call
+            t_cached = @elapsed evaluate(kernel, x, y)  # Second call (cached)
+            
+            # Time uncached evaluation
+            t_uncached = @elapsed evaluate(kernel_nocache, x, y)
+            
+            @test t_cached < t_uncached  # Cached should be faster
+        end
     end
 end

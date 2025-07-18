@@ -52,12 +52,14 @@ Manages a quantum circuit with w*x + θ parameterization.
 - `weights`: Vector of weight parameters
 - `biases`: Vector of bias parameters  
 - `gate_features`: Feature index used by each parameterized gate
+- `n_features`: The feature dimension of the data being mapped by this circuit
 """
-struct ReuploadingCircuit
+struct ReuploadingCircuit <: AbstractQuantumFeatureMap
     circuit::ChainBlock
     weights::Vector{Float64}
     biases::Vector{Float64}
-    gate_features::Vector{Int}
+    gate_features::Vector{Int64}
+    n_features::Int64
 end
 
 """
@@ -104,7 +106,7 @@ function ReuploadingCircuit(n_qubits::Int, n_features::Int, n_layers::Int, entan
     
     circuit = chain(n_qubits, circuit)
     n_params= nparameters(circuit)
-    return ReuploadingCircuit(circuit, zeros(n_params), zeros(n_params), gate_features)
+    return ReuploadingCircuit(circuit, zeros(n_params), zeros(n_params), gate_features, n_features)
 end
 
 """
@@ -112,6 +114,7 @@ end
                    biases::Vector{Float64}, x::Vector{Float64})
 
 Compute gate angles using formula: angle[i] = w[i] * x[feature[i]] + b[i]
+using the weights and biases stored in the circuit
 
 # Arguments
 - `pc`: ParameterizedCircuit object
@@ -122,14 +125,12 @@ Compute gate angles using formula: angle[i] = w[i] * x[feature[i]] + b[i]
 # Returns
 - Vector of angles for dispatch!
 """
-function compute_angles(pc::ReuploadingCircuit, weights::Vector{Float64}, 
-                       biases::Vector{Float64}, x::Vector{Float64})
-    @assert length(weights) == pc.n_weights
-    @assert length(biases) == pc.n_biases
-    
-    angles = Vector{Float64}(undef, pc.n_weights)
-    @inbounds for i in 1:pc.n_weights
-        angles[i] = weights[i] * x[pc.gate_features[i]] + biases[i]
+function compute_angles(pc::ReuploadingCircuit, x::Vector{Float64})   
+    @argcheck length(x) == pc.n_features
+
+    angles = Vector{Float64}(undef, length(pc.weights))
+    for i in eachindex(pc.weights)
+        angles[i] = pc.weights[i] * x[pc.gate_features[i]] + pc.biases[i]
     end
     return angles
 end
@@ -198,33 +199,57 @@ function expectation_and_gradient(reup_circ::ReuploadingCircuit, params::Vector{
     return real(val), grad_params
 end
 
+
+# ================================= 
+# AbstractQuantumFeatureMap interface
+# ================================= 
+
+
+n_qubits(fm::ReuploadingCircuit) = nqubits(fm.circuit)
+n_features(fm::ReuploadingCircuit) = fm.n_features
+get_params(fm::ReuploadingCircuit) = (fm.weights, fm.biases)
+
 """
+  n_parameters(fm::ReuploadingCircuit)  
 
-    assign_params!(reup_circ::ReuploadingCircuit, weights::Vector{Float64}, biases::Vector{Float64})       
-
-    Takes two vectors of weights and biases parameters and stores them to be used in the final computation of
-    the rotation gates.
-
+Returns the number of **angles** calculated by the circuit.
+Each angle is calculated by angle = w * x_feature + b
 """
-function assign_params!(reup_circ::ReuploadingCircuit, weights::Vector{Float64}, biases::Vector{Float64})
-    @assert length(weights) == length(reup_circ.weights)
-    @assert length(biases) == length(reup_circ.biases)
-    reup_circ.weights .= weights  # Use .= for in-place copy
-    reup_circ.biases .= biases
+n_parameters(fm::ReuploadingCircuit) = nparameters(fm.circuit)
+
+
+function map_inputs!(fm::ReuploadingCircuit, x::Vector{Float64})
+    angles = compute_angles(fm, x)
+    dispatch!(fm.circuit, angles)
 end
 
 
 
 """
-    assign_random_params!(reup_circ::ReuploadingCircuit, range::Tuple{Float64, Float64} = (-π, π); seed = 11)       
+    assign_params!(fm::ReuploadingCircuit, weights::Vector{Float64}, biases::Vector{Float64})       
+
+    Takes two vectors of weights and biases parameters and stores them to be used in the final computation of
+    the rotation gates.
+
+"""
+function assign_params!(fm::ReuploadingCircuit, weights::Vector{Float64}, biases::Vector{Float64})
+    @assert length(weights) == length(fm.weights)
+    @assert length(biases) == length(fm.biases)
+    fm.weights .= weights  # Use .= for in-place copy
+    fm.biases .= biases
+end
+
+
+"""
+    assign_random_params!(fm::ReuploadingCircuit, range::Tuple{Float64, Float64} = (-π, π); seed = 11)       
 
     Assigns the parameters of the circuit to random values distributed uniformly in the given range.
 """
-function assign_random_params!(reup_circ::ReuploadingCircuit, range::Tuple{Float64, Float64} = (-π, π); seed = 11)
+function assign_random_params!(fm::ReuploadingCircuit, range::Tuple{<:Real, <:Real} = (-π, π); seed = 11)
     Random.seed!(seed)
-    n_params = nparameters(reup_circ.circuit)
+    n_params = nparameters(fm.circuit)
     
     # Correct random generation using range
-    reup_circ.weights .= range[1] .+ (range[2] - range[1]) .* rand(n_params)
-    reup_circ.biases .= range[1] .+ (range[2] - range[1]) .* rand(n_params)
+    fm.weights .= range[1] .+ (range[2] - range[1]) .* rand(n_params)
+    fm.biases .= range[1] .+ (range[2] - range[1]) .* rand(n_params)
 end

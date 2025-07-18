@@ -1,24 +1,32 @@
 module TQK
 
-# Core types and utilities
-include("types.jl")
+using Yao
+using YaoBlocks
+using Yao.AD
+using LinearAlgebra
+using ArgCheck
+using LRUCache
+using ProgressMeter
+using Random
+using Base.Threads
 
-# Kernel implementations
+# Include implementation files
+include("feature_maps/interface.jl")
+include("feature_maps/reupload.jl")
 include("kernels/fidelity.jl")
 
-# Feature map implementations
-include("feature_maps/reupload.jl")
+# Export types
+export AbstractQuantumFeatureMap, ReuploadingCircuit, FidelityKernel
+export EntanglementBlock, linear, alternating, all_to_all
 
-# Core type exports
-export CircuitParameters, random_parameters, get_parameter_shapes
+# Export functions for feature maps
+export n_qubits, n_features, n_parameters, map_inputs!
+export assign_params!, assign_random_params!, get_params
 
-# Kernel exports
-export FidelityKernel, evaluate, clear_cache!
+# Export functions for kernels
+export evaluate, clear_cache!
 
-# Feature map exports
-export ReuploadingCircuit, assign_random_params, assign_params!
-export create_entanglement_block, EntanglementBlock
-export linear, alternating, all_to_all
+# Export utility functions
+export expectation_and_gradient, compute_angles
 
-
-end # module
+end
