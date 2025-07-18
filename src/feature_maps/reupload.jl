@@ -1,0 +1,230 @@
+using SymEngine, Yao, Yao.AD, LinearAlgebra, ArgCheck
+
+# Don't include types.jl here - it's already loaded by the parent module!
+# include("../types.jl")  # REMOVE THIS LINE
+
+@enum EntanglementBlock linear alternating all_to_all
+
+"""
+    create_entanglement_block(n_qubits::Int, strategy::Symbol = :linear)
+
+Creates an entangling layer.
+
+# Arguments
+- `n_qubits`: The total number of qubits.
+- `strategy`: A symbol indicating the entanglement pattern (:linear, :circular, etc.).
+
+# Returns
+- A `ChainBlock` containing the entangling gates.
+"""
+function create_entanglement_block(n_qubits::Int, strategy::EntanglementBlock = linear)
+    if n_qubits <= 1
+        return chain() # No entanglement for 1 qubit
+    end
+
+    if strategy == linear
+        # Entangles qubit i with qubit i+1
+        return chain(n_qubits, [control(i, i+1 => X) for i in 1:n_qubits-1])
+    elseif strategy == all_to_all
+        # Entangles every qubit with every other qubit
+         gates = [control(i, j => X) for i in 1:n_qubits for j in 1:n_qubits if i != j]
+         return chain(n_qubits, gates)
+    elseif strategy == alternating
+        # As seen in the paper's 4-qubit example
+        # This would need the layer index to alternate properly.
+        # For simplicity, we'll use a fixed example here.
+        cz_set1 = chain(n_qubits, control(1, 2 => Z), control(3, 4 => Z))
+        cz_set2 = chain(n_qubits, control(2, 3 => Z), control(1, 4 => Z))
+        return chain(cz_set1, cz_set2) # Example for a single layer
+    else
+        error("Unknown entanglement strategy: $strategy")
+    end
+end
+
+
+"""
+    ReuploadingCircuit
+
+Manages a quantum circuit with w*x + θ parameterization.
+
+# Fields
+- `circuit`: The Yao circuit with placeholder parameters
+- `weights`: Vector of weight parameters
+- `biases`: Vector of bias parameters  
+- `gate_features`: Feature index used by each parameterized gate
+"""
+struct ReuploadingCircuit
+    circuit::ChainBlock
+    weights::Vector{Float64}
+    biases::Vector{Float64}
+    gate_features::Vector{Int}
+end
+
+"""
+    ReuploadingCircuit(n_qubits::Int, n_features::Int, n_layers::Int, entanglement::EntanglementBlock)
+
+Build a data-reuploading circuit with parameterized gates.
+
+# Arguments
+- `n_qubits`: Number of qubits
+- `n_features`: Number of input features
+- `n_layers`: Number of circuit layers
+- `entanglement`: Entanglement between layers
+
+# Returns
+- `ReuploadingCircuit` object with tracked parameter mappings
+"""
+function ReuploadingCircuit(n_qubits::Int, n_features::Int, n_layers::Int, entanglement::EntanglementBlock)
+    circuit = []
+    gate_features = Int[]
+
+    GATES = [Rz, Ry, Rx]
+    # map each feature to an idx in the GATES list
+    gates_idxs = [(i - 1) % 3 + 1 for i in 1:n_features]
+    
+    for layer in 1:n_layers
+        # Single-qubit rotation layer
+        full_qubits_layer = []
+        for q in 1:n_qubits
+            single_qubit_layer = chain(n_qubits, put(q => GATES[i % 3 + 1](0.0)) for i in 0:n_features-1)
+            append!(gate_features, [i for i in 1:n_features])
+            push!(full_qubits_layer, single_qubit_layer)
+        end
+
+        push!(circuit, chain(n_qubits, full_qubits_layer))
+        
+        # Entangling layer
+        if layer < n_layers
+            entanglement_block = create_entanglement_block(n_qubits, entanglement)
+            if !isempty(entanglement_block)
+                push!(circuit, entanglement_block)
+            end
+        end
+    end
+    
+    circuit = chain(n_qubits, circuit)
+    n_params= nparameters(circuit)
+    return ReuploadingCircuit(circuit, zeros(n_params), zeros(n_params), gate_features)
+end
+
+"""
+    compute_angles(pc::ParameterizedCircuit, weights::Vector{Float64}, 
+                   biases::Vector{Float64}, x::Vector{Float64})
+
+Compute gate angles using formula: angle[i] = w[i] * x[feature[i]] + b[i]
+
+# Arguments
+- `pc`: ParameterizedCircuit object
+- `weights`: Weight parameters
+- `biases`: Bias parameters  
+- `x`: Input feature vector
+
+# Returns
+- Vector of angles for dispatch!
+"""
+function compute_angles(pc::ReuploadingCircuit, weights::Vector{Float64}, 
+                       biases::Vector{Float64}, x::Vector{Float64})
+    @assert length(weights) == pc.n_weights
+    @assert length(biases) == pc.n_biases
+    
+    angles = Vector{Float64}(undef, pc.n_weights)
+    @inbounds for i in 1:pc.n_weights
+        angles[i] = weights[i] * x[pc.gate_features[i]] + biases[i]
+    end
+    return angles
+end
+
+
+"""
+    gradient_chain_rule(grad_angles::Vector{Float64}, x::Vector{Float64}, 
+                       gate_features::Vector{Int}, n_params::Int)
+
+Apply chain rule to convert angle gradients to parameter gradients.
+
+# Mathematical formulation
+For each gate i with angle = w[i] * x[j] + b[i]:
+- ∂L/∂w[i] = ∂L/∂angle[i] * x[j]
+- ∂L/∂b[i] = ∂L/∂angle[i]
+
+# Returns
+- Vector [grad_w1, grad_b1, grad_w2, grad_b2, ...]
+"""
+function gradient_chain_rule(grad_angles::Vector{Float64}, x::Vector{Float64}, 
+                           gate_features::Vector{Int}, n_params::Int)
+    grad_params = Vector{Float64}(undef, 2 * n_params)
+    
+    @inbounds for i in 1:n_params
+        feature_idx = gate_features[i]
+        grad_params[2i-1] = grad_angles[i] * x[feature_idx]  # ∂L/∂w
+        grad_params[2i] = grad_angles[i]                     # ∂L/∂b
+    end
+    
+    return grad_params
+end
+
+
+"""
+    expectation_and_gradient(pc::ParameterizedCircuit, params::Vector{Float64}, 
+                           x::Vector{Float64}, observable)
+
+Compute expectation value and parameter gradients using Yao's AD.
+
+# Arguments
+- `pc`: ParameterizedCircuit object
+- `params`: Flattened parameters [w1, b1, w2, b2, ...]
+- `x`: Input feature vector
+- `observable`: Yao observable to measure
+
+# Returns
+- `(expectation_value, gradient_vector)`
+"""
+function expectation_and_gradient(reup_circ::ReuploadingCircuit, params::Vector{Float64}, 
+                                x::Vector{Float64}, observable)
+    # Split parameters
+    weights = params[1:2:end]
+    biases = params[2:2:end]
+    
+    # Compute and dispatch angles
+    angles = compute_angles(reup_circ, weights, biases, x)
+    dispatch!(reup_circ.circuit, angles)
+    
+    # Get expectation and angle gradients from Yao
+    reg = zero_state(nqubits(reup_circ.circuit))
+    val, grad_angles = expect'(observable, reg => reup_circ.circuit)
+    
+    # Apply chain rule
+    grad_params = gradient_chain_rule(grad_angles, x, reup_circ.gate_features, reup_circ.n_weights)
+    
+    return real(val), grad_params
+end
+
+"""
+
+    assign_params!(reup_circ::ReuploadingCircuit, weights::Vector{Float64}, biases::Vector{Float64})       
+
+    Takes two vectors of weights and biases parameters and stores them to be used in the final computation of
+    the rotation gates.
+
+"""
+function assign_params!(reup_circ::ReuploadingCircuit, weights::Vector{Float64}, biases::Vector{Float64})
+    @assert length(weights) == length(reup_circ.weights)
+    @assert length(biases) == length(reup_circ.biases)
+    reup_circ.weights .= weights  # Use .= for in-place copy
+    reup_circ.biases .= biases
+end
+
+
+
+"""
+    assign_random_params!(reup_circ::ReuploadingCircuit, range::Tuple{Float64, Float64} = (-π, π); seed = 11)       
+
+    Assigns the parameters of the circuit to random values distributed uniformly in the given range.
+"""
+function assign_random_params!(reup_circ::ReuploadingCircuit, range::Tuple{Float64, Float64} = (-π, π); seed = 11)
+    Random.seed!(seed)
+    n_params = nparameters(reup_circ.circuit)
+    
+    # Correct random generation using range
+    reup_circ.weights .= range[1] .+ (range[2] - range[1]) .* rand(n_params)
+    reup_circ.biases .= range[1] .+ (range[2] - range[1]) .* rand(n_params)
+end
