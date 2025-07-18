@@ -27,6 +27,6 @@ export assign_params!, assign_random_params!, get_params
 export evaluate, clear_cache!
 
 # Export utility functions
-export expectation_and_gradient, compute_angles
+export expectation_and_gradient, compute_angles!
 
 end

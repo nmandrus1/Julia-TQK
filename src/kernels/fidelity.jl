@@ -45,7 +45,7 @@ function FidelityKernel(feature_map::AbstractQuantumFeatureMap;
 end
 
 """
-    compute_kernel_value(kernel::FidelityKernel, x_statevec::ArrayReg, y::Vector)
+    compute_kernel_value(kernel::FidelityKernel, x_statevec::ArrayReg, y::AbstractVector{Float64})
 
 Compute the quantum kernel value K(x,y) = |⟨0|U†(x)U(y)|0⟩|².
 
@@ -54,7 +54,7 @@ Compute the quantum kernel value K(x,y) = |⟨0|U†(x)U(y)|0⟩|².
 - `x_statevec`: Precomputed statevector for the U(x) circuit
 - `y`: Data vector that needs to be mapped to U(y)
 """
-function compute_kernel_value(kernel::FidelityKernel, x_statevec::ArrayReg, y::Vector)
+function compute_kernel_value(kernel::FidelityKernel, x_statevec::ArrayReg, y::AbstractVector{Float64})
     # Cache lookup commented out for now
     # if kernel.use_cache && !isnothing(kernel.cache)
     #     cache_key = (state(x_statevec), y)
@@ -140,13 +140,13 @@ function evaluate(kernel::FidelityKernel, X::Matrix)
     # Sequential row-by-row computation
     for i in 1:n_samples
         # Compute statevector for row i
-        xi = X[i, :]
+        xi = @view X[i, :]
         map_inputs!(kernel.feature_map, xi)
         apply!(x_statevec, kernel.feature_map.circuit)
         
         # Compute kernel values for this row
         for j in i:n_samples
-            xj = X[j, :]
+            xj = @view X[j, :]
             K[i, j] = compute_kernel_value(kernel, x_statevec, xj)
             if i != j
                 K[j, i] = K[i, j]  # Exploit symmetry
