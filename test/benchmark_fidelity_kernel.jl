@@ -2,23 +2,24 @@
 using Test
 using BenchmarkTools
 using ProfileView
+using Profile
 using TQK  # your package
 
 function profile_kernel(num_qubits::Int = 4, num_features::Int = 6, num_layers::Int = 2, entanglement::EntanglementBlock = linear; num_datapoints::Int=500)
     reup = ReuploadingCircuit(num_qubits, num_features, num_layers, entanglement)
     assign_random_params!(reup)
 
-    kernel = FidelityKernel(reup, use_cache=true)
+    kernel = FidelityKernel(reup, use_cache=true, parallel=false)
     X = rand(500, num_features)
 
-    @profview evaluate(kernel, X)
+    @profile for i in 1:25 evaluate(kernel, X) end
 end
 
 
 function benchmark(num_qubits::Int = 4, num_features::Int = 6, num_layers::Int = 2, entanglement::EntanglementBlock = linear; num_datapoints::Int=500)
     reup = ReuploadingCircuit(num_qubits, num_features, num_layers, entanglement)
 
-    kernel = FidelityKernel(reup, use_cache=true)
+    kernel = FidelityKernel(reup, use_cache=true, parallel=false)
     assign_random_params!(reup, seed=nothing)
     X = rand(500, num_features)
 

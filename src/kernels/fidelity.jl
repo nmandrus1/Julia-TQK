@@ -1,4 +1,3 @@
-
 using LRUCache
 using LinearAlgebra
 using Yao
@@ -12,8 +11,6 @@ Computes kernel values as K(x,y) = |⟨0|U†(x)U(y)|0⟩|².
 
 # Fields
 - `feature_map`: A quantum circuit that maps input data to a quantum state
-- `n_qubits`: Number of qubits in the circuit
-- `params`: Parameters for the feature map circuit
 - `use_cache`: Whether to cache kernel evaluations
 - `cache`: LRU cache for kernel values
 - `parallel`: Whether to use parallel computation
@@ -28,79 +25,82 @@ mutable struct FidelityKernel
 end
 
 """
-    FidelityKernel(feature_map, n_qubits, params; 
-                  use_cache=true, cache_size=10000, parallel=true)
+    FidelityKernel(feature_map; use_cache=true, cache_size=10000, parallel=true)
 
 Construct a quantum kernel.
 
 # Arguments
 - `feature_map`: Circuit that builds feature map
-- `n_qubits`: Number of qubits
-- `params`: Parameters for the feature map
 - `use_cache`: Enable caching of kernel evaluations
 - `cache_size`: Maximum number of cached entries
 - `parallel`: Enable parallel computation
 """
 function FidelityKernel(feature_map::AbstractQuantumFeatureMap;
-                      use_cache::Bool=true, cache_size::Int=10000, parallel::Bool=true)
+                       use_cache::Bool=true, 
+                       cache_size::Int=10000, 
+                       parallel::Bool=true)
     cache = use_cache ? LRU{Tuple{Vector{Float64}, Vector{Float64}}, Float64}(maxsize=cache_size) : nothing
-    return FidelityKernel(feature_map, use_cache, cache, parallel, zero_state(n_qubits(feature_map)))
+    workspace = zero_state(n_qubits(feature_map))
+    return FidelityKernel(feature_map, use_cache, cache, parallel, workspace)
 end
 
-
 """
-    compute_kernel_value(kernel::FidelityKernel, x::Vector, y::Vector)
+    compute_kernel_value(kernel::FidelityKernel, x_statevec::ArrayReg, y::Vector)
 
 Compute the quantum kernel value K(x,y) = |⟨0|U†(x)U(y)|0⟩|².
 
 # Arguments
 - `kernel`: FidelityKernel 
 - `x_statevec`: Precomputed statevector for the U(x) circuit
-- `y`: Datavector that needs to be mapped to U(y)' 
+- `y`: Data vector that needs to be mapped to U(y)
 """
 function compute_kernel_value(kernel::FidelityKernel, x_statevec::ArrayReg, y::Vector)
-    # Check cache first
+    # Cache lookup commented out for now
     # if kernel.use_cache && !isnothing(kernel.cache)
-    #     cache_key = (x, y)
+    #     cache_key = (state(x_statevec), y)
     #     if haskey(kernel.cache, cache_key)
     #         return kernel.cache[cache_key]
     #     end
     # end
 
-    # invariant -- assume workspace has been reset
+    # Verify workspace is in |0⟩ state
     @assert all(iszero, state(kernel._workspace)[2:end]) "Workspace was not properly zeroed out!"
 
-    fm = kernel.feature_map
-
-    # apply uncompute circuit
-    map_inputs!(fm, y)
-    kernel._workspace |> fm.circuit'
+    # Apply uncompute circuit: U†(y)|0⟩
+    map_inputs!(kernel.feature_map, y)
+    apply!(kernel._workspace, kernel.feature_map.circuit)
     
-    
-    # Get probability of measuring |0...0⟩
-    # This is |⟨0|ψ⟩|² where |ψ⟩ = U(y)U†(x)|0⟩
+    # Compute |⟨0|U†(x)U(y)|0⟩|² = |⟨ψ_x|ψ_y⟩|²
     kernel_value = abs2(x_statevec'kernel._workspace)
     
-    # Cache the result
+    # Cache result (commented out for now)
     # if kernel.use_cache && !isnothing(kernel.cache)
-    #     kernel.cache[(x, y)] = kernel_value
+    #     kernel.cache[cache_key] = kernel_value
     # end
 
-    # reset workspace
+    # Reset workspace to |0⟩
     workspace_state = state(kernel._workspace)
     workspace_state .= 0
-    workspace_state[1] = 1.0 # -> |0...0⟩
+    workspace_state[1] = 1.0
     
     return kernel_value
 end
 
 """
-    evaluate(kernel::FidelityKernel, x::Vector, y::Vector)
+  evaluate(kernel::FidelityKernel, x::Vector, y::Vector) 
 
-Evaluate the quantum kernel between two data points.
+Computes the kernel between these two data points.
+> NOTE: If you are doing several kernel evaluations it will be more efficient
+        to use the row-caching logic in the matrix evaluation functions
+
 """
+
 function evaluate(kernel::FidelityKernel, x::Vector, y::Vector)
-    return compute_kernel_value(kernel, x, y)
+    fm = kernel.feature_map
+    map_inputs!(kernel.feature_map, x)
+    x_statevec = apply!(zero_state(n_qubits(fm)), fm.circuit)
+
+    return compute_kernel_value(kernel, x_statevec, y)
 end
 
 """
@@ -116,42 +116,47 @@ function evaluate(kernel::FidelityKernel, X::Matrix)
     n_samples = size(X, 1)
     K = zeros(n_samples, n_samples)
 
-    # workspace to avoid reallocating statevector
-    x_statevec = zero_state(n_qubits(kernel.feature_map))
-    
+    # Parallel implementation commented out for now
     # if kernel.parallel && nthreads() > 1       
     #     # Compute upper triangle in parallel
     #     @threads for idx in 1:div(n_samples * (n_samples + 1), 2)
     #         # Convert linear index to (i,j) coordinates
     #         i = ceil(Int, (-1 + sqrt(1 + 8*idx)) / 2)
     #         j = idx - div(i * (i - 1), 2)
-            
+    #         
     #         xi = X[i, :]
     #         xj = X[j, :]
-            
+    #         
     #         K[i, j] = compute_kernel_value(kernel, xi, xj)
     #         if i != j
     #             K[j, i] = K[i, j]  # Symmetry
     #         end           
     #     end
     # else
-        # Sequential computation
-        for i in 1:n_samples
-
-            # compute x_statevec for this row 
-            xi = X[i, :]
-            map_inputs!(kernel.feature_map, xi)
-            x_statevec |> kernel.feature_map.circuit # FIX: nice generic way of applying feature map to quantum state
-
-            for j in i:n_samples
-                xj = X[j, :]
-                
-                K[i, j] = compute_kernel_value(kernel, x_statevec, xj)
-                if i != j
-                    K[j, i] = K[i, j]  # Symmetry
-                end
+    
+    # Workspace for precomputed statevector
+    x_statevec = zero_state(n_qubits(kernel.feature_map))
+    
+    # Sequential row-by-row computation
+    for i in 1:n_samples
+        # Compute statevector for row i
+        xi = X[i, :]
+        map_inputs!(kernel.feature_map, xi)
+        apply!(x_statevec, kernel.feature_map.circuit)
+        
+        # Compute kernel values for this row
+        for j in i:n_samples
+            xj = X[j, :]
+            K[i, j] = compute_kernel_value(kernel, x_statevec, xj)
+            if i != j
+                K[j, i] = K[i, j]  # Exploit symmetry
             end
         end
+        
+        # Reset x_statevec for next row
+        state(x_statevec) .= 0
+        state(x_statevec)[1] = 1.0
+    end
     # end
     
     return K
@@ -167,38 +172,44 @@ Compute the kernel matrix K(X,Y) between two datasets.
 - `Y`: Second data matrix (e.g., test data)
 """
 function evaluate(kernel::FidelityKernel, X::Matrix, Y::Matrix)
-    n_x = size(X, 2)
-    n_y = size(Y, 2)
+    n_x = size(X, 1)
+    n_y = size(Y, 1)
     K = zeros(n_x, n_y)
 
-    # workspace to avoid reallocating statevector
-    x_statevec = zero_state(n_qubits(kernel.feature_map))
     
+    # Parallel implementation commented out for now
     # if kernel.parallel && nthreads() > 1
     #     @threads for idx in 1:(n_x * n_y)
     #         i = div(idx - 1, n_y) + 1
     #         j = mod(idx - 1, n_y) + 1
-            
+    #         
     #         xi = X[i, :]
     #         yj = Y[j, :]
-            
+    #         
     #         K[i, j] = compute_kernel_value(kernel, xi, yj)           
     #     end
     # else
-        # Sequential computation
-        for i in 1:n_x
+    
+    # Workspace for precomputed statevector
+    x_statevec = zero_state(n_qubits(kernel.feature_map))
 
-            # compute x_statevec for this row 
-            xi = X[i, :]
-            map_inputs!(kernel.feature_map, xi)
-            x_statevec |> kernel.feature_map.circuit # FIX: nice generic way of applying feature map to quantum state
-
-            for j in 1:n_y
-                yj = Y[j, :]
-                
-                K[i, j] = compute_kernel_value(kernel, x_statevec, yj)
-            end
+    # Sequential row-by-row computation
+    for i in 1:n_x
+        # Compute statevector for row i of X
+        xi = X[i, :]
+        map_inputs!(kernel.feature_map, xi)
+        apply!(x_statevec, kernel.feature_map.circuit)
+        
+        # Compute kernel values against all rows of Y
+        for j in 1:n_y
+            yj = Y[j, :]
+            K[i, j] = compute_kernel_value(kernel, x_statevec, yj)
         end
+        
+        # Reset x_statevec for next row
+        state(x_statevec) .= 0
+        state(x_statevec)[1] = 1.0
+    end
     # end
     
     return K
