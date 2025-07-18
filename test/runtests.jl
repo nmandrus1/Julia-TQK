@@ -97,7 +97,8 @@ end
             
             # Test angle computation
             x = [0.5, 0.3]
-            angles = compute_angles(fm, x)
+            compute_angles!(fm, x)
+            angles = fm.angles
             
             # Verify angles are computed correctly
             for i in 1:length(angles)
@@ -156,6 +157,7 @@ end
             n_samples = 5
             X = rand(n_samples, 2)  # 5 samples × 2 features
             
+            # Test allocating version
             K = evaluate(kernel, X)
             
             # Check dimensions
@@ -180,6 +182,33 @@ end
             end
         end
         
+        @testset "In-place kernel matrix evaluation" begin
+            fm = ReuploadingCircuit(3, 2, 2, linear)
+            assign_random_params!(fm, seed=42)
+            
+            kernel = FidelityKernel(fm, use_cache=false)
+            
+            # Generate test data
+            n_samples = 5
+            X = rand(n_samples, 2)
+            
+            # Pre-allocate matrix
+            K_inplace = zeros(n_samples, n_samples)
+            
+            # Test in-place version
+            evaluate!(K_inplace, kernel, X)
+            
+            # Compare with allocating version
+            K_alloc = evaluate(kernel, X)
+            @test K_inplace ≈ K_alloc atol=1e-10
+            
+            # Test that it actually modifies in-place
+            K_test = ones(n_samples, n_samples) * 999.0
+            evaluate!(K_test, kernel, X)
+            @test K_test ≈ K_alloc atol=1e-10
+            @test !any(K_test .≈ 999.0)  # All values should be changed
+        end
+        
         @testset "Two dataset kernel matrix" begin
             fm = ReuploadingCircuit(2, 3, 1, linear)
             assign_random_params!(fm, seed=42)
@@ -190,6 +219,7 @@ end
             X_train = rand(4, 3)  # 4 samples × 3 features
             X_test = rand(3, 3)   # 3 samples × 3 features
             
+            # Test allocating version
             K = evaluate(kernel, X_train, X_test)
             
             # Check dimensions
@@ -200,6 +230,30 @@ end
                 k_ij = evaluate(kernel, X_train[i, :], X_test[j, :])
                 @test K[i, j] ≈ k_ij atol=1e-10
             end
+        end
+        
+        @testset "In-place two dataset evaluation" begin
+            fm = ReuploadingCircuit(2, 3, 1, linear)
+            assign_random_params!(fm, seed=42)
+            
+            kernel = FidelityKernel(fm, use_cache=false)
+            
+            X_train = rand(4, 3)
+            X_test = rand(3, 3)
+            
+            # Pre-allocate matrix
+            K_inplace = zeros(4, 3)
+            
+            # Test in-place version
+            evaluate!(K_inplace, kernel, X_train, X_test)
+            
+            # Compare with allocating version
+            K_alloc = evaluate(kernel, X_train, X_test)
+            @test K_inplace ≈ K_alloc atol=1e-10
+            
+            # Test dimension checking
+            K_wrong = zeros(3, 3)  # Wrong dimensions
+            @test_throws AssertionError evaluate!(K_wrong, kernel, X_train, X_test)
         end
         
         @testset "Caching functionality" begin
@@ -257,11 +311,17 @@ end
                 kernel = FidelityKernel(fm, use_cache=false)
                 
                 # Generate test data - ROWS are samples
-                X = rand(3, config.n_features)  # 3 samples × n_features
-                K = evaluate(kernel, X)
+                n_samples = 3
+                X = rand(n_samples, config.n_features)
                 
-                @test is_positive_semidefinite(K)
-                @test all(diag(K) .≈ 1.0)
+                # Test both allocating and in-place versions
+                K_alloc = evaluate(kernel, X)
+                K_inplace = zeros(n_samples, n_samples)
+                evaluate!(K_inplace, kernel, X)
+                
+                @test K_alloc ≈ K_inplace atol=1e-10
+                @test is_positive_semidefinite(K_alloc)
+                @test all(diag(K_alloc) .≈ 1.0)
             end
         end       
     end
@@ -274,11 +334,15 @@ end
             
             # Small dataset - ROWS are samples
             X_small = rand(10, 3)  # 10 samples × 3 features
-            @time K_small = evaluate(kernel, X_small)
-            @test is_positive_semidefinite(K_small)
             
-            # Cache functionality is commented out in current implementation
-            # Skip cache performance tests
+            # Compare allocating vs in-place performance
+            K_alloc = @time evaluate(kernel, X_small)
+            
+            K_inplace = zeros(10, 10)
+            @time evaluate!(K_inplace, kernel, X_small)
+            
+            @test K_alloc ≈ K_inplace atol=1e-10
+            @test is_positive_semidefinite(K_alloc)
         end
     end
 end

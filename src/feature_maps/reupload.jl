@@ -237,7 +237,7 @@ Each angle is calculated by angle = w * x_feature + b
 n_parameters(fm::ReuploadingCircuit) = nparameters(fm.circuit)
 
 
-function map_inputs!(fm::ReuploadingCircuit, x::AbstractVector{Float64})
+function map_inputs!(fm::ReuploadingCircuit, x::AbstractVector)
     compute_angles!(fm, x)
     for (gate, angle) in zip(fm.parameterized_gates, fm.angles)
         setiparams!(gate, angle)

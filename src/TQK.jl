@@ -24,7 +24,7 @@ export n_qubits, n_features, n_parameters, map_inputs!
 export assign_params!, assign_random_params!, get_params
 
 # Export functions for kernels
-export evaluate, clear_cache!
+export evaluate, evaluate!, clear_cache!
 
 # Export utility functions
 export expectation_and_gradient, compute_angles!

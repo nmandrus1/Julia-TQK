@@ -11,8 +11,9 @@ function profile_kernel(num_qubits::Int = 4, num_features::Int = 6, num_layers::
 
     kernel = FidelityKernel(reup, use_cache=true, parallel=false)
     X = rand(500, num_features)
+    K = zeros(500, 500)
 
-    @profile for i in 1:25 evaluate(kernel, X) end
+    @profile for i in 1:25 evaluate!(K, kernel, X) end
 end
 
 
@@ -23,7 +24,7 @@ function benchmark(num_qubits::Int = 4, num_features::Int = 6, num_layers::Int =
     assign_random_params!(reup, seed=nothing)
     X = rand(500, num_features)
 
-    @benchmark evaluate($kernel, $X) seconds=60
+    @benchmark evaluate!(K, $kernel, $X) seconds=60 setup=(K = zeros(500, 500))
 end
 
 function benchmark_kernel_evaluate()
