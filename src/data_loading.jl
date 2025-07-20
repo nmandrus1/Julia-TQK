@@ -1,6 +1,6 @@
 using DataFrames, DrWatson, CSV
 
-function load_breast_cancer()
+function load_breast_cancer(;return_X_y::Bool=false)
     BC_COLUMN_NAMES = [:ID, :Diagnosis, :radius1, :texture1, :perimeter1,
                    :area1, :smoothness1, :compactness1, :concavity1,
                    :concave_points1, :symmetry1, :fractal_dimension1,
@@ -12,5 +12,17 @@ function load_breast_cancer()
 
     data_file = datadir("UCI", "BreastCancer", "wdbc.data")
     df = DataFrame(CSV.File(data_file; header=BC_COLUMN_NAMES))
-    return select(df, Not(:ID), :Diagnosis => (y -> y .== "M" ? 1 : -1) => :Diagnosis)
+
+    # Remove ID 
+    select!(df, Not(:ID))
+    transform!(df, :Diagnosis => ByRow(y -> y .== "M" ? 1 : -1) => :Diagnosis)
+
+    if return_X_y
+        # convert to Matrix
+        y = Matrix(select(df,:Diagnosis))
+        X = Matrix(select(df, Not(:Diagnosis)))
+        return X, y
+    end
+
+    return df
 end

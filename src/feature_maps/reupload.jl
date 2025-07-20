@@ -102,20 +102,35 @@ function ReuploadingCircuit(n_qubits::Int, n_features::Int, n_layers::Int, entan
     all_gates = []
     gate_features = Int[]
 
-    GATES = [Rz, Ry, Rx]
-    gates_idxs = [(i - 1) % 3 + 1 for i in 1:n_features]
+    n_chunks = div(n_features, 3)
+    remaining_encodings = n_features - 3*n_chunks
     
     for layer in 1:n_layers
         # Single-qubit rotation layer
         for q in 1:n_qubits
-            for i in 1:n_features
-                push!(all_gates, put(q => GATES[gates_idxs[i]](0.0)))
-                push!(gate_features, i)
+            for k in 0:n_chunks-1
+                # Rz(2) Ry(1) Rz(3)
+                push!(all_gates, put(q => Rz(0.0)))
+                push!(all_gates, put(q => Ry(0.0)))
+                push!(all_gates, put(q => Rz(0.0)))
+                push!(gate_features, k*3 + 3)
+                push!(gate_features, k*3 + 1)
+                push!(gate_features, k*3 + 2)
+            end           
+            if remaining_encodings == 2
+                push!(all_gates, put(q => Rz(0.0)))
+                push!(gate_features, n_chunks*3 + 2)
+                push!(all_gates, put(q => Ry(0.0)))
+                push!(gate_features, n_chunks*3 + 1)
+            elseif remaining_encodings == 1
+                push!(all_gates, put(q => Ry(0.0)))
+                push!(gate_features, n_chunks*3 + 1)
             end
+           
         end
         
         # Entangling layer
-        if layer < n_layers
+        if layer < n_layers && n_qubits > 1
             entanglement_block = create_entanglement_block(n_qubits, entanglement)
             if !isempty(entanglement_block.blocks)
                 # Append the gates from the entanglement block to the flat list
@@ -146,11 +161,12 @@ using the weights and biases stored in the circuit
 # Returns
 - Vector of angles for dispatch!
 """
-function compute_angles!(pc::ReuploadingCircuit, x::AbstractVector{Float64})   
+function compute_angles!(pc::ReuploadingCircuit, x::AbstractVector)   
     @argcheck length(x) == pc.n_features
 
     for i in eachindex(pc.weights)
-        pc.angles[i] = pc.weights[i] * x[pc.gate_features[i]] + pc.biases[i]
+        feature_idx = pc.gate_features[i]
+        pc.angles[i] = pc.weights[i] * x[feature_idx] + pc.biases[i]
     end
 end
 

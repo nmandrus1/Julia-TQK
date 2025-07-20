@@ -39,7 +39,7 @@ Builds and modifies the quantum circuit for input features x.
 The circuit should have all parameters set according to the current state of fm.
 """
 function map_inputs!(fm::AbstractQuantumFeatureMap, x::AbstractVector)
-    error("build_circuit not implemented for $(typeof(fm))")
+    error("map_inputs! not implemented for $(typeof(fm))")
 end
 
 """

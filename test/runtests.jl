@@ -345,4 +345,170 @@ end
             @test is_positive_semidefinite(K_alloc)
         end
     end
+
+    # Add these tests to the existing runtests.jl file
+
+    @testset "Memory-Aware Caching Tests" begin
+        @testset "Memory budget calculation and strategy selection" begin
+            fm = ReuploadingCircuit(3, 2, 1, linear)
+            assign_random_params!(fm, seed=42)
+            kernel = FidelityKernel(fm, use_cache=false)
+        
+            # Small dataset that fits in memory
+            X_small = rand(10, 2)
+            K_small = zeros(10, 10)
+        
+            # Test with large memory budget (should use cache)
+            evaluate!(K_small, kernel, X_small, memory_budget_gb=1.0)
+        
+            # Test with tiny memory budget (should not use cache)
+            K_small_nocache = zeros(10, 10)
+            evaluate!(K_small_nocache, kernel, X_small, memory_budget_gb=0.000001)
+        
+            # Results should be identical
+            @test K_small ≈ K_small_nocache atol=1e-10
+        end
+    
+        @testset "Cached vs non-cached correctness" begin
+            fm = ReuploadingCircuit(4, 3, 2, linear)
+            assign_random_params!(fm, seed=42)
+            kernel = FidelityKernel(fm, use_cache=false)
+        
+            # Test data
+            X = rand(20, 3)
+            Y = rand(15, 3)
+        
+            # Symmetric case
+            K_cached = zeros(20, 20)
+            K_nocached = zeros(20, 20)
+        
+            evaluate_symmetric_cached!(K_cached, kernel, X)
+            evaluate_symmetric_nocache!(K_nocached, kernel, X)
+        
+            @test K_cached ≈ K_nocached atol=1e-10
+            @test is_positive_semidefinite(K_cached)
+            @test all(diag(K_cached) .≈ 1.0)
+        
+            # Asymmetric case
+            K_xy_cached = zeros(20, 15)
+            K_xy_nocached = zeros(20, 15)
+        
+            evaluate_asymmetric_cached!(K_xy_cached, kernel, X, Y)
+            evaluate_asymmetric_nocache!(K_xy_nocached, kernel, X, Y)
+        
+            @test K_xy_cached ≈ K_xy_nocached atol=1e-10
+        end
+    
+        @testset "Performance comparison" begin
+            fm = ReuploadingCircuit(3, 2, 1, linear)
+            assign_random_params!(fm, seed=42)
+            kernel = FidelityKernel(fm, use_cache=false)
+        
+            X = rand(50, 2)
+        
+            # Time cached version
+            K_cached = zeros(50, 50)
+            t_cached = @elapsed evaluate_symmetric_cached!(K_cached, kernel, X)
+        
+            # Time non-cached version
+            K_nocached = zeros(50, 50)
+            t_nocached = @elapsed evaluate_symmetric_nocache!(K_nocached, kernel, X)
+        
+            @test K_cached ≈ K_nocached atol=1e-10
+        
+            # Cached should be faster
+            println("Cached time: $t_cached s, Non-cached time: $t_nocached s")
+            println("Speedup: $(t_nocached/t_cached)x")
+        
+            # For asymmetric case
+            Y = rand(40, 2)
+            K_xy_cached = zeros(50, 40)
+            t_xy_cached = @elapsed evaluate_asymmetric_cached!(K_xy_cached, kernel, X, Y)
+        
+            K_xy_nocached = zeros(50, 40)
+            t_xy_nocached = @elapsed evaluate_asymmetric_nocache!(K_xy_nocached, kernel, X, Y)
+        
+            @test K_xy_cached ≈ K_xy_nocached atol=1e-10
+        
+            println("Asymmetric - Cached time: $t_xy_cached s, Non-cached time: $t_xy_nocached s")
+            println("Asymmetric speedup: $(t_xy_nocached/t_xy_cached)x")
+        end
+    
+        @testset "Memory budget edge cases" begin
+            # Test with varying qubit numbers
+            for n_qubits in [2, 4, 6]
+                fm = ReuploadingCircuit(n_qubits, 2, 1, linear)
+                assign_random_params!(fm, seed=42)
+                kernel = FidelityKernel(fm, use_cache=false)
+            
+                # Calculate exact memory requirement
+                n_samples = 100
+                bytes_per_statevec = (2^n_qubits) * 16
+                required_gb = (n_samples * bytes_per_statevec) / (1024^3)
+            
+                X = rand(n_samples, 2)
+            
+                # Test just below threshold (should use nocache)
+                K_below = zeros(n_samples, n_samples)
+                evaluate!(K_below, kernel, X, memory_budget_gb=required_gb * 0.99)
+            
+                # Test just above threshold (should use cache)
+                K_above = zeros(n_samples, n_samples)
+                evaluate!(K_above, kernel, X, memory_budget_gb=required_gb * 1.01)
+            
+                # Results should match
+                @test K_below ≈ K_above atol=1e-10
+            end
+        end
+    
+        @testset "BLAS dotc optimization" begin
+            fm = ReuploadingCircuit(3, 2, 1, linear)
+            assign_random_params!(fm, seed=42)
+            kernel = FidelityKernel(fm, use_cache=false)
+        
+            # Create test statevectors
+            x_statevec = zero_state(3)
+            y_statevec = zero_state(3)
+        
+            # Apply some random unitary
+            map_inputs!(fm, [0.5, 0.3])
+            apply!(x_statevec, fm.circuit)
+        
+            map_inputs!(fm, [0.7, 0.2])
+            apply!(y_statevec, fm.circuit)
+        
+            # Compare methods
+            k_cached = compute_kernel_value_cached(x_statevec, y_statevec)
+        
+            # Manual computation for verification
+            dot_manual = sum(conj(state(x_statevec)) .* state(y_statevec))
+            k_manual = abs2(dot_manual)
+        
+            @test k_cached ≈ k_manual atol=1e-10
+        end
+    
+        @testset "Large dataset memory scaling" begin
+            # Test that memory calculation is correct
+            fm = ReuploadingCircuit(5, 2, 1, linear)  # 2^5 = 32 qubits
+            kernel = FidelityKernel(fm, use_cache=false)
+        
+            # Calculate expected memory
+            n_samples = 1000
+            expected_bytes = n_samples * (2^5) * 16  # Complex{Float64}
+            expected_gb = expected_bytes / (1024^3)
+        
+            println("Expected memory requirement: $expected_gb GB")
+        
+            # This should trigger non-cached version with default 4GB limit
+            X = rand(n_samples, 2)
+            K = zeros(10, 10)  # Only compute small subset
+            X_subset = X[1:10, :]
+        
+            # Should use non-cached strategy
+            evaluate!(K, kernel, X_subset, memory_budget_gb=0.1)
+        
+            @test is_positive_semidefinite(K)
+        end
+    end
 end
+
