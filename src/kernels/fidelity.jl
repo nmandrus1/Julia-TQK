@@ -4,6 +4,7 @@ using LinearAlgebra
 using LinearAlgebra.BLAS
 using Yao
 using YaoBlocks
+using Logging
 
 """
     FidelityKernel
@@ -43,22 +44,39 @@ function FidelityKernel(feature_map::AbstractQuantumFeatureMap;
     return FidelityKernel(feature_map, use_cache, cache, parallel)
 end
 
+# --- Core Helper Functions ---
+
+"""
+    In-place modification of a Yao statevector to the |0⟩ state
+"""
+@inline function zero!(statevec::ArrayReg)
+    s = state(statevec)
+    fill!(s, 0)
+    s[1] = 1.0
+end
+
+"""
+    create_statevec!(register::ArrayReg, feature_map, x::AbstractVector)
+
+Computes the statevector |ψ(x)⟩ = U(x)|0⟩ in-place in the provided register.
+"""
+@inline function create_statevec!(register::ArrayReg, feature_map, x::AbstractVector)
+    zero!(register)
+    map_inputs!(feature_map, x)
+    apply!(register, feature_map.circuit)
+    return register
+end
+
 """
     compute_kernel_value!(kernel::FidelityKernel, x_statevec::ArrayReg, y::AbstractVector{Float64}, workspace::ArrayReg)
 
 Compute the quantum kernel value K(x,y) = |⟨0|U†(x)U(y)|0⟩|².
 """
 function compute_kernel_value!(kernel::FidelityKernel, x_statevec::ArrayReg, y::AbstractVector, workspace::ArrayReg)
-    # Reset workspace to |0⟩
-    workspace_state = state(workspace)
-    workspace_state .= 0
-    workspace_state[1] = 1.0
-    
-    # Apply uncompute circuit: U(y)|0⟩
+    zero!(workspace)
     map_inputs!(kernel.feature_map, y)
     apply!(workspace, kernel.feature_map.circuit)
     
-    # Compute |⟨ψ_x|ψ_y⟩|² using BLAS for efficiency
     dot_product = BLAS.dotc(length(state(x_statevec)), state(x_statevec), 1, state(workspace), 1)
     return abs2(dot_product)
 end
@@ -74,183 +92,36 @@ function compute_kernel_value_cached(x_statevec::ArrayReg, y_statevec::ArrayReg)
 end
 
 """
-    evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_gb::Float64=4.0)
+    calculate_tile_size(num_qubits::Int, memory_budget_gb::Float64, split_factor::Float64=1.0)
 
-Compute the symmetric kernel matrix K(X,X) with memory-aware caching.
+Calculate how many statevectors can fit in the memory budget.
+
+# Arguments
+- `num_qubits`: Number of qubits
+- `memory_budget_gb`: Memory budget in GB
+- `split_factor`: Fraction of budget to use (e.g., 0.5 for splitting between X and Y)
+
+# Returns
+- tile_size: Number of statevectors that fit
 """
-function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_gb::Float64=4.0)
-    # determine which caching strategy to use based on memory reqs
-
-    n_samples = size(X, 1)
-    @argcheck size(K) == (n_samples, n_samples) "K must be $n_samples × $n_samples"
+function calculate_tile_size(num_qubits::Int, memory_budget_gb::Float64, split_factor::Float64=1.0)
+    bytes_per_statevec = (2^num_qubits) * sizeof(ComplexF64)
+    memory_budget_bytes = memory_budget_gb * (1024^3) * split_factor
     
-    # Calculate memory requirements
-    num_qubits = n_qubits(kernel.feature_map)
-    bytes_per_statevec = (2^num_qubits) * 16  # Complex{Float64}
-    required_memory_bytes = n_samples * bytes_per_statevec
-    memory_budget_bytes = memory_budget_gb * (1024^3)
-    
-    if required_memory_bytes <= memory_budget_bytes
-        # Use cached strategy
-        evaluate_symmetric_cached!(K, kernel, X)
-    else
-        # Use original memory-efficient strategy
-        evaluate_symmetric_nocache!(K, kernel, X)
+    if bytes_per_statevec > memory_budget_bytes
+        error("Memory budget of $(memory_budget_gb) GB is insufficient for even a single $(num_qubits)-qubit statevector (requires $(bytes_per_statevec / 1024^3) GB)")
     end
     
-    return K
+    tile_size = floor(Int, memory_budget_bytes / bytes_per_statevec)
+    
+    if tile_size < 100 && split_factor == 1.0
+        @warn "Small tile size: only $tile_size statevectors fit in $(memory_budget_gb) GB. Consider increasing memory budget for better performance."
+    end
+    
+    return tile_size
 end
 
-"""
-    evaluate_symmetric_cached!(K::Matrix, kernel::FidelityKernel, X::Matrix)
-
-Compute symmetric kernel matrix with pre-cached statevectors.
-"""
-function evaluate_symmetric_cached!(K::Matrix, kernel::FidelityKernel, X::Matrix)
-    n_samples = size(X, 1)
-    num_qubits = n_qubits(kernel.feature_map)
-    
-    # Pre-compute all statevectors
-    statevectors = Vector{ArrayReg}(undef, n_samples)
-    for i in 1:n_samples
-        statevectors[i] = zero_state(num_qubits)
-        map_inputs!(kernel.feature_map, @view X[i, :])
-        apply!(statevectors[i], kernel.feature_map.circuit)
-    end
-    
-    # Compute kernel matrix using cached statevectors
-    @inbounds for i in 1:n_samples
-        K[i, i] = 1.0  # Diagonal
-        for j in (i+1):n_samples
-            K[i, j] = compute_kernel_value_cached(statevectors[i], statevectors[j])
-            K[j, i] = K[i, j]  # Symmetry
-        end
-    end
-end
-
-"""
-    evaluate_symmetric_nocache!(K::Matrix, kernel::FidelityKernel, X::Matrix)
-
-Original memory-efficient implementation without caching.
-"""
-function evaluate_symmetric_nocache!(K::Matrix, kernel::FidelityKernel, X::Matrix)
-    n_samples = size(X, 1)
-    num_qubits = n_qubits(kernel.feature_map)
-    
-    # Workspace registers
-    x_statevec = zero_state(num_qubits)
-    workspace = zero_state(num_qubits)
-    
-    @inbounds for i in 1:n_samples
-        # Reset and compute statevector for row i
-        state(x_statevec) .= 0
-        state(x_statevec)[1] = 1.0
-        
-        xi = @view X[i, :]
-        map_inputs!(kernel.feature_map, xi)
-        apply!(x_statevec, kernel.feature_map.circuit)
-        
-        K[i, i] = 1.0  # Diagonal
-        
-        for j in (i+1):n_samples
-            xj = @view X[j, :]
-            K[i, j] = compute_kernel_value!(kernel, x_statevec, xj, workspace)
-            K[j, i] = K[i, j]  # Symmetry
-        end
-    end
-end
-
-"""
-    evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix; memory_budget_gb::Float64=4.0)
-
-Compute the asymmetric kernel matrix K(X,Y) with memory-aware caching.
-"""
-function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix; memory_budget_gb::Float64=4.0)
-    n_x = size(X, 1)
-    n_y = size(Y, 1)
-    @assert size(K) == (n_x, n_y) "K must be $n_x × $n_y"
-    
-    # Calculate memory requirements for Y statevectors
-    num_qubits = n_qubits(kernel.feature_map)
-    bytes_per_statevec = (2^num_qubits) * 16  # Complex{Float64}
-    required_memory_bytes = n_y * bytes_per_statevec
-    memory_budget_bytes = memory_budget_gb * (1024^3)
-    
-    if required_memory_bytes <= memory_budget_bytes
-        # Use cached strategy
-        evaluate_asymmetric_cached!(K, kernel, X, Y)
-    else
-        # Use original memory-efficient strategy
-        evaluate_asymmetric_nocache!(K, kernel, X, Y)
-    end
-    
-    return K
-end
-
-"""
-    evaluate_asymmetric_cached!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix)
-
-Compute asymmetric kernel matrix with pre-cached Y statevectors.
-"""
-function evaluate_asymmetric_cached!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix)
-    n_x = size(X, 1)
-    n_y = size(Y, 1)
-    num_qubits = n_qubits(kernel.feature_map)
-    
-    # Pre-compute all Y statevectors
-    y_statevectors = Vector{ArrayReg}(undef, n_y)
-    for j in 1:n_y
-        y_statevectors[j] = zero_state(num_qubits)
-        map_inputs!(kernel.feature_map, @view Y[j, :])
-        apply!(y_statevectors[j], kernel.feature_map.circuit)
-    end
-    
-    # Compute kernel matrix
-    x_statevec = zero_state(num_qubits)
-    @inbounds for i in 1:n_x
-        # Reset and compute X statevector
-        state(x_statevec) .= 0
-        state(x_statevec)[1] = 1.0
-        
-        map_inputs!(kernel.feature_map, @view X[i, :])
-        apply!(x_statevec, kernel.feature_map.circuit)
-        
-        # Compute against all cached Y statevectors
-        for j in 1:n_y
-            K[i, j] = compute_kernel_value_cached(x_statevec, y_statevectors[j])
-        end
-    end
-end
-
-"""
-    evaluate_asymmetric_nocache!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix)
-
-Original memory-efficient implementation without caching.
-"""
-function evaluate_asymmetric_nocache!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix)
-    n_x = size(X, 1)
-    n_y = size(Y, 1)
-    num_qubits = n_qubits(kernel.feature_map)
-    
-    # Workspace registers
-    x_statevec = zero_state(num_qubits)
-    workspace = zero_state(num_qubits)
-    
-    @inbounds for i in 1:n_x
-        # Reset and compute statevector for row i of X
-        state(x_statevec) .= 0
-        state(x_statevec)[1] = 1.0
-        
-        xi = @view X[i, :]
-        map_inputs!(kernel.feature_map, xi)
-        apply!(x_statevec, kernel.feature_map.circuit)
-        
-        for j in 1:n_y
-            yj = @view Y[j, :]
-            K[i, j] = compute_kernel_value!(kernel, x_statevec, yj, workspace)
-        end
-    end
-end
+# --- Main Evaluation Functions ---
 
 """
     evaluate(kernel::FidelityKernel, X::Matrix; memory_budget_gb::Float64=4.0)
@@ -291,6 +162,134 @@ function evaluate(kernel::FidelityKernel, x::Vector, y::Vector)
     workspace = zero_state(n_qubits(fm))
     
     return compute_kernel_value!(kernel, x_statevec, y, workspace)
+end
+
+"""
+    evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_gb::Float64=4.0)
+
+Compute the symmetric kernel matrix K(X,X) with hybrid tiled evaluation.
+"""
+function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_gb::Float64=4.0)
+    n_samples = size(X, 1)
+    @argcheck size(K) == (n_samples, n_samples) "K must be $n_samples × $n_samples"
+    
+    num_qubits = n_qubits(kernel.feature_map)
+    tile_size = calculate_tile_size(num_qubits, memory_budget_gb)
+    
+    # Process tiles for the upper triangle
+    @inbounds for i_start in 1:tile_size:n_samples
+        i_end = min(i_start + tile_size - 1, n_samples)
+        X_i_view = @view X[i_start:i_end, :]
+        
+        # Compute diagonal block (X_i vs X_i)
+        K_diag_view = @view K[i_start:i_end, i_start:i_end]
+        evaluate_symmetric_cached!(K_diag_view, kernel, X_i_view)
+        
+        # Compute off-diagonal blocks (X_i vs X_j for j > i)
+        for j_start in (i_end + 1):tile_size:n_samples
+            j_end = min(j_start + tile_size - 1, n_samples)
+            X_j_view = @view X[j_start:j_end, :]
+            
+            K_offdiag_view = @view K[i_start:i_end, j_start:j_end]
+            evaluate_asymmetric_cached!(K_offdiag_view, kernel, X_i_view, X_j_view)
+            
+            # Exploit symmetry
+            K[j_start:j_end, i_start:i_end] .= transpose(K_offdiag_view)
+        end
+    end
+    
+    return K
+end
+
+"""
+    evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix; memory_budget_gb::Float64=4.0)
+
+Compute the asymmetric kernel matrix K(X,Y) with hybrid tiled evaluation.
+"""
+function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix; memory_budget_gb::Float64=4.0)
+    n_x = size(X, 1)
+    n_y = size(Y, 1)
+    @assert size(K) == (n_x, n_y) "K must be $n_x × $n_y"
+    
+    num_qubits = n_qubits(kernel.feature_map)
+    # Split budget 50/50 between X and Y tiles
+    tile_size = calculate_tile_size(num_qubits, memory_budget_gb, 0.5)
+    
+    # Efficient loop order: cache X tile and reuse against all Y tiles
+    @inbounds for i_start in 1:tile_size:n_x
+        i_end = min(i_start + tile_size - 1, n_x)
+        X_view = @view X[i_start:i_end, :]
+        
+        for j_start in 1:tile_size:n_y
+            j_end = min(j_start + tile_size - 1, n_y)
+            Y_view = @view Y[j_start:j_end, :]
+            
+            K_view = @view K[i_start:i_end, j_start:j_end]
+            evaluate_asymmetric_cached!(K_view, kernel, X_view, Y_view)
+        end
+    end
+    
+    return K
+end
+
+# --- Core Cached Implementations ---
+
+"""
+    evaluate_symmetric_cached!(K_view, kernel, X_view)
+
+Computes one symmetric tile with all statevectors cached in memory.
+Only computes upper triangle and uses symmetry.
+"""
+function evaluate_symmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, X_view::AbstractMatrix)
+    n_samples = size(X_view, 1)
+    num_qubits = n_qubits(kernel.feature_map)
+    
+    # Pre-compute all statevectors
+    statevectors = [zero_state(num_qubits) for _ in 1:n_samples]
+    for i in 1:n_samples
+        create_statevec!(statevectors[i], kernel.feature_map, @view X_view[i, :])
+    end
+    
+    # Compute kernel values
+    @inbounds for i in 1:n_samples
+        K_view[i, i] = 1.0  # Diagonal
+        for j in (i+1):n_samples
+            val = compute_kernel_value_cached(statevectors[i], statevectors[j])
+            K_view[i, j] = val
+            K_view[j, i] = val  # Symmetry
+        end
+    end
+end
+
+"""
+    evaluate_asymmetric_cached!(K_view, kernel, X_view, Y_view)
+
+Computes one asymmetric tile with all statevectors cached in memory.
+"""
+function evaluate_asymmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, 
+                                   X_view::AbstractMatrix, Y_view::AbstractMatrix)
+    n_x = size(X_view, 1)
+    n_y = size(Y_view, 1)
+    num_qubits = n_qubits(kernel.feature_map)
+    
+    # Pre-compute all statevectors
+    x_statevectors = [zero_state(num_qubits) for _ in 1:n_x]
+    y_statevectors = [zero_state(num_qubits) for _ in 1:n_y]
+    
+    for i in 1:n_x
+        create_statevec!(x_statevectors[i], kernel.feature_map, @view X_view[i, :])
+    end
+    
+    for j in 1:n_y
+        create_statevec!(y_statevectors[j], kernel.feature_map, @view Y_view[j, :])
+    end
+    
+    # Compute kernel values
+    @inbounds for i in 1:n_x
+        for j in 1:n_y
+            K_view[i, j] = compute_kernel_value_cached(x_statevectors[i], y_statevectors[j])
+        end
+    end
 end
 
 """

@@ -24,7 +24,7 @@ export n_qubits, n_features, n_parameters, map_inputs!
 export assign_params!, assign_random_params!, get_params
 
 # Export functions for kernels
-export evaluate, evaluate!, clear_cache!, evaluate_symmetric_cached!, evaluate_symmetric_nocache!, compute_kernel_value_cached, evaluate_asymmetric_cached!, evaluate_asymmetric_nocache!
+export evaluate, evaluate!, clear_cache!, evaluate_symmetric_cached!, compute_kernel_value_cached, evaluate_asymmetric_cached!, calculate_tile_size
 
 # Export utility functions
 export expectation_and_gradient, compute_angles!
