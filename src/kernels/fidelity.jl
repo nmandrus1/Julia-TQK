@@ -175,6 +175,10 @@ function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_g
     
     num_qubits = n_qubits(kernel.feature_map)
     tile_size = calculate_tile_size(num_qubits, memory_budget_gb)
+
+    # compute workspaces and allocate memory for reuse
+    xi_statevectors = [zero_state(num_qubits) for _ in 1:n_samples]
+    xj_statevectors = [zero_state(num_qubits) for _ in 1:n_samples]
     
     # Process tiles for the upper triangle
     @inbounds for i_start in 1:tile_size:n_samples
@@ -182,8 +186,10 @@ function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_g
         X_i_view = @view X[i_start:i_end, :]
         
         # Compute diagonal block (X_i vs X_i)
+        # NOTE: This function computes all the xi statevectors already so we can just use them!
         K_diag_view = @view K[i_start:i_end, i_start:i_end]
-        evaluate_symmetric_cached!(K_diag_view, kernel, X_i_view)
+        evaluate_symmetric_cached!(K_diag_view, kernel, X_i_view, xi_statevectors)
+
         
         # Compute off-diagonal blocks (X_i vs X_j for j > i)
         for j_start in (i_end + 1):tile_size:n_samples
@@ -191,7 +197,7 @@ function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_g
             X_j_view = @view X[j_start:j_end, :]
             
             K_offdiag_view = @view K[i_start:i_end, j_start:j_end]
-            evaluate_asymmetric_cached!(K_offdiag_view, kernel, X_i_view, X_j_view)
+            evaluate_asymmetric_cached!(K_offdiag_view, kernel, X_i_view, X_j_view, xi_statevectors, xj_statevectors)
             
             # Exploit symmetry
             K[j_start:j_end, i_start:i_end] .= transpose(K_offdiag_view)
@@ -214,18 +220,27 @@ function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix; memo
     num_qubits = n_qubits(kernel.feature_map)
     # Split budget 50/50 between X and Y tiles
     tile_size = calculate_tile_size(num_qubits, memory_budget_gb, 0.5)
+
+    # compute workspaces and allocate memory for reuse
+    x_statevectors = [zero_state(num_qubits) for _ in 1:n_x]
+    y_statevectors = [zero_state(num_qubits) for _ in 1:n_y]
     
     # Efficient loop order: cache X tile and reuse against all Y tiles
     @inbounds for i_start in 1:tile_size:n_x
         i_end = min(i_start + tile_size - 1, n_x)
         X_view = @view X[i_start:i_end, :]
+
+        for i in 1:n_x
+            # sets statevectors to zero and applys feature map
+            create_statevec!(x_statevectors[i], kernel.feature_map, @view X_view[i, :])
+        end
         
         for j_start in 1:tile_size:n_y
             j_end = min(j_start + tile_size - 1, n_y)
             Y_view = @view Y[j_start:j_end, :]
             
             K_view = @view K[i_start:i_end, j_start:j_end]
-            evaluate_asymmetric_cached!(K_view, kernel, X_view, Y_view)
+            evaluate_asymmetric_cached!(K_view, kernel, X_view, Y_view, x_statevectors, y_statevectors)
         end
     end
     
@@ -240,12 +255,10 @@ end
 Computes one symmetric tile with all statevectors cached in memory.
 Only computes upper triangle and uses symmetry.
 """
-function evaluate_symmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, X_view::AbstractMatrix)
+function evaluate_symmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, X_view::AbstractMatrix, statevectors::AbstractVector{T}) where {T<:AbstractArrayReg}
     n_samples = size(X_view, 1)
-    num_qubits = n_qubits(kernel.feature_map)
     
     # Pre-compute all statevectors
-    statevectors = [zero_state(num_qubits) for _ in 1:n_samples]
     for i in 1:n_samples
         create_statevec!(statevectors[i], kernel.feature_map, @view X_view[i, :])
     end
@@ -266,28 +279,21 @@ end
 
 Computes one asymmetric tile with all statevectors cached in memory.
 """
-function evaluate_asymmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, 
-                                   X_view::AbstractMatrix, Y_view::AbstractMatrix)
+function evaluate_asymmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, X_view::AbstractMatrix, Y_view::AbstractMatrix,
+                                   x_statevectors::AbstractVector{T1}, workspace::AbstractVector{T2}) where {T1<:AbstractArrayReg, T2<:AbstractArrayReg}   
+
     n_x = size(X_view, 1)
     n_y = size(Y_view, 1)
-    num_qubits = n_qubits(kernel.feature_map)
-    
-    # Pre-compute all statevectors
-    x_statevectors = [zero_state(num_qubits) for _ in 1:n_x]
-    y_statevectors = [zero_state(num_qubits) for _ in 1:n_y]
-    
-    for i in 1:n_x
-        create_statevec!(x_statevectors[i], kernel.feature_map, @view X_view[i, :])
-    end
-    
+
     for j in 1:n_y
-        create_statevec!(y_statevectors[j], kernel.feature_map, @view Y_view[j, :])
+        # sets statevectors to zero and applys feature map
+        create_statevec!(workspace[j], kernel.feature_map, @view Y_view[j, :])
     end
     
     # Compute kernel values
     @inbounds for i in 1:n_x
         for j in 1:n_y
-            K_view[i, j] = compute_kernel_value_cached(x_statevectors[i], y_statevectors[j])
+            K_view[i, j] = compute_kernel_value_cached(x_statevectors[i], workspace[j])
         end
     end
 end
