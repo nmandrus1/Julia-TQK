@@ -20,13 +20,16 @@ export AbstractQuantumFeatureMap, ReuploadingCircuit, FidelityKernel
 export EntanglementBlock, linear, alternating, all_to_all
 
 # Export functions for feature maps
-export n_qubits, n_features, n_parameters, map_inputs!
+export n_qubits, n_features, n_params, map_inputs!
 export assign_params!, assign_random_params!, get_params
 
 # Export functions for kernels
-export evaluate, evaluate!, clear_cache!, evaluate_symmetric_cached!, compute_kernel_value_cached, evaluate_asymmetric_cached!, calculate_tile_size
+export evaluate, evaluate!, evaluate_symmetric_cached!, compute_kernel_value_cached, evaluate_asymmetric_cached!, calculate_tile_size
+
+# gradients
+export loss_gradient
 
 # Export utility functions
-export expectation_and_gradient, compute_angles!
+export compute_angles!
 
 end

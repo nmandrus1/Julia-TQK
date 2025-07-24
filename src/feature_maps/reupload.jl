@@ -1,8 +1,5 @@
-using SymEngine, Yao, Yao.AD, LinearAlgebra, ArgCheck
+using Yao, Yao.AD, LinearAlgebra, ArgCheck 
  
-# Don't include types.jl here - it's already loaded by the parent module!
-# include("../types.jl")  # REMOVE THIS LINE
-
 @enum EntanglementBlock linear alternating all_to_all
 
 """
@@ -172,68 +169,45 @@ end
 
 
 """
-    gradient_chain_rule(grad_angles::Vector{Float64}, x::Vector{Float64}, 
-                       gate_features::Vector{Int}, n_params::Int)
+    gradient_chain_rule!(grad_params, fm, grad_angles, x)
 
-Apply chain rule to convert angle gradients to parameter gradients.
-
-# Mathematical formulation
-For each gate i with angle = w[i] * x[j] + b[i]:
-- ∂L/∂w[i] = ∂L/∂angle[i] * x[j]
-- ∂L/∂b[i] = ∂L/∂angle[i]
-
-# Returns
-- Vector [grad_w1, grad_b1, grad_w2, grad_b2, ...]
-"""
-function gradient_chain_rule(grad_angles::Vector{Float64}, x::Vector{Float64}, 
-                           gate_features::Vector{Int}, n_params::Int)
-    grad_params = Vector{Float64}(undef, 2 * n_params)
-    
-    @inbounds for i in 1:n_params
-        feature_idx = gate_features[i]
-        grad_params[2i-1] = grad_angles[i] * x[feature_idx]  # ∂L/∂w
-        grad_params[2i] = grad_angles[i]                     # ∂L/∂b
-    end
-    
-    return grad_params
-end
-
-
-"""
-    expectation_and_gradient(pc::ParameterizedCircuit, params::Vector{Float64}, 
-                           x::Vector{Float64}, observable)
-
-Compute expectation value and parameter gradients using Yao's AD.
+Apply the chain rule to convert angle gradients into parameter gradients,
+accumulating the results in-place into a pre-allocated vector.
 
 # Arguments
-- `pc`: ParameterizedCircuit object
-- `params`: Flattened parameters [w1, b1, w2, b2, ...]
-- `x`: Input feature vector
-- `observable`: Yao observable to measure
+- `grad_params::Vector{Float64}`: Pre-allocated vector of size (2 * n_params) to accumulate [w1, b1, w2, b2, ...] gradients.
+- `fm::ReuploadingCircuit`: The feature map containing parameter information.
+- `grad_angles::Vector{Float64}`: The vector of angle gradients (∂L/∂θ) for the data point `x`.
+- `x::Vector{Float64}`: The input data point.
 
-# Returns
-- `(expectation_value, gradient_vector)`
+# Mathematical Formulation
+For each gate `i` with angle = w[i] * x[j] + b[i], this function calculates:
+- ∂L/∂w[i] = ∂L/∂angle[i] * x[j]
+- ∂L/∂b[i] = ∂L/∂angle[i]
+... and adds them to the corresponding elements in `grad_params`.
 """
-function expectation_and_gradient(reup_circ::ReuploadingCircuit, params::Vector{Float64}, 
-                                x::Vector{Float64}, observable)
-    # Split parameters
-    weights = params[1:2:end]
-    biases = params[2:2:end]
-    
-    # Compute and dispatch angles
-    compute_angles!(reup_circ, x)
-    dispatch!(reup_circ.circuit, reup_circ.angles)
-    
-    # Get expectation and angle gradients from Yao
-    reg = zero_state(nqubits(reup_circ.circuit))
-    val, grad_angles = expect'(observable, reg => reup_circ.circuit)
-    
-    # Apply chain rule
-    grad_params = gradient_chain_rule(grad_angles, x, reup_circ.gate_features, reup_circ.n_weights)
-    
-    return real(val), grad_params
-end
+function gradient_chain_rule!(
+    grad_params::AbstractVector{Float64},
+    fm::ReuploadingCircuit,
+    grad_angles::AbstractVector{Float64},
+    x::AbstractVector{Float64}
+)
+    num_gate_params = n_params(fm)
+    # Optional: Add checks for debugging to ensure array sizes match
+    @assert length(grad_params) == 2 * num_gate_params "grad_params has incorrect size."
+    @assert length(grad_angles) == num_gate_params "grad_angles has incorrect size."
 
+    @inbounds for i in 1:num_gate_params
+        feature_idx = fm.gate_features[i]
+        angle_grad = grad_angles[i]
+        
+        # Accumulate gradient for weight w_i
+        grad_params[2*i - 1] += angle_grad * x[feature_idx]
+        
+        # Accumulate gradient for bias b_i
+        grad_params[2*i] += angle_grad
+    end
+end
 
 # ================================= 
 # AbstractQuantumFeatureMap interface
@@ -250,7 +224,7 @@ get_params(fm::ReuploadingCircuit) = (fm.weights, fm.biases)
 Returns the number of **angles** calculated by the circuit.
 Each angle is calculated by angle = w * x_feature + b
 """
-n_parameters(fm::ReuploadingCircuit) = nparameters(fm.circuit)
+n_params(fm::ReuploadingCircuit) = nparameters(fm.circuit)
 
 
 function map_inputs!(fm::ReuploadingCircuit, x::AbstractVector)

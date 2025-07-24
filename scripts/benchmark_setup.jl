@@ -17,18 +17,18 @@ function setup_benchmark_vars(; num_qubits = 4, num_features = 6, num_layers = 2
         weights = [elem for n in 0:(num_qubits * num_layers - 1) for elem in repeating_assignment .+ num_features*n]
         x = ones(num_features)
     else
-        weights = ones(n_parameters(reup))
+        weights = ones(nparameters(reup))
         x = [float(i) for i in 1:num_features]
     end
 
     assign_params!(reup, weights, reup.biases)
 
-    kernel = FidelityKernel(reup, use_cache=false, parallel=false)
+    kernel = FidelityKernel(reup)
 
     if random_data
-        X_data = rand(500, num_features)
+        X_data = rand(10, num_features)
     else
-        X_data = [num_features*r + c for r in 0:499, c in 0:num_features-1]
+        X_data = [num_features*r + c for r in 0:9, c in 0:num_features-1]
     end
     return reup, kernel, weights, x, X_data
 end

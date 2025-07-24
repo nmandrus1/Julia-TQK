@@ -28,7 +28,7 @@ end
     
 Returns the total number of trainable parameters in the feature map.
 """
-function n_parameters(fm::AbstractQuantumFeatureMap)
+function n_params(fm::AbstractQuantumFeatureMap)
     error("n_parameters not implemented for $(typeof(fm))")
 end
 
