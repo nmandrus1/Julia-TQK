@@ -202,10 +202,10 @@ function gradient_chain_rule!(
         angle_grad = grad_angles[i]
         
         # Accumulate gradient for weight w_i
-        grad_params[2*i - 1] += angle_grad * x[feature_idx]
+        grad_params[i] += angle_grad * x[feature_idx]
         
         # Accumulate gradient for bias b_i
-        grad_params[2*i] += angle_grad
+        grad_params[num_gate_params + i] += angle_grad
     end
 end
 
@@ -243,7 +243,7 @@ end
     the rotation gates.
 
 """
-function assign_params!(fm::ReuploadingCircuit, weights::Vector{Float64}, biases::Vector{Float64})
+function assign_params!(fm::ReuploadingCircuit, weights::AbstractVector{Float64}, biases::AbstractVector{Float64})
     @assert length(weights) == length(fm.weights)
     @assert length(biases) == length(fm.biases)
     fm.weights .= weights  # Use .= for in-place copy

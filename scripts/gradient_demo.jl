@@ -6,8 +6,10 @@ using TQK
 # Load required packages
 using LinearAlgebra
 using Random
-using Printf
 using Plots
+using Optimization 
+using OptimizationOptimJL
+using OptimizationOptimisers
 
 # Set random seed for reproducibility
 #Random.seed!(42)
@@ -41,58 +43,22 @@ function kernel_alignment_loss(K::Matrix, y::Vector)
     return loss
 end
 
-# Gradient descent function
-function train_quantum_kernel!(kernel, X, y; 
-                              learning_rate=0.1, 
-                              n_epochs=50,
-                              verbose=true)
-    
-    losses = Float64[]
-    
-    # Get initial parameters
-    fm = kernel.feature_map
-    weights = copy(fm.weights)
-    biases = copy(fm.biases)
+function norm_kernel_alignment_loss(K::Matrix, y::Vector)
+    y_outer = y * y'  # Target kernel based on labels
 
-    # allocate workspace
-    ws = create_preallocated_workspace(fm, size(X, 1), memory_budget_gb=8.0)
-    
-    if verbose
-        println("Initial parameters:")
-        println("  Weights: ", round.(weights[1:min(4, length(weights))], digits=3), "...")
-        println("  Biases:  ", round.(biases[1:min(4, length(biases))], digits=3), "...")
-    end
-    
-    for epoch in 1:n_epochs
-        # Compute loss and gradients
-        loss_fn = K -> kernel_alignment_loss(K, y)
-        
-        # Forward pass and gradient computation
-        current_loss, (grad_weights, grad_biases) = loss_gradient(kernel, loss_fn, X, ws)
-        
-        # Current loss
-        push!(losses, current_loss)
-        
-        # Gradient descent update
-        weights .-= learning_rate * grad_weights
-        biases .-= learning_rate * grad_biases
-        
-        # Update feature ma paramet5rs
-        assign_params!(fm, weights, biases)
-        
-        if verbose && (epoch % 10 == 0 || epoch == 1)
-            println("Epoch $epoch: Loss = $(round(current_loss, digits=6))")
-            println("  ||∇w|| = $(round(norm(grad_weights), digits=4)), ||∇b|| = $(round(norm(grad_biases), digits=4))")
-        end
-    end
-    
-    if verbose
-        println("\nFinal parameters:")
-        println("  Weights: ", round.(weights[1:min(4, length(weights))], digits=3), "...")
-        println("  Biases:  ", round.(biases[1:min(4, length(biases))], digits=3), "...")
-    end
-    
-    return losses
+    # Normalize K (e.g., Frobenius norm)
+    K_norm = K ./ norm(K, 2) # Using Frobenius norm (norm(K, 2) is the spectral norm, 
+                             # norm(K) or norm(K, :frob) for Frobenius)
+                             # Let's assume Frobenius for now for simplicity of discussion
+                             # K_norm = K ./ norm(K, :frob)
+
+    # Normalize y_outer if desired (usually y_outer is the target, so fixed)
+    # y_outer_norm = y_outer ./ norm(y_outer, :frob) # Only if y_outer needs dynamic normalization
+
+    # MSE loss between normalized kernels
+    # Using y_outer directly if it's your target, not its normalized version
+    loss = sum((K_norm - y_outer).^2) # Or (K_norm - y_outer_norm).^2 if y_outer is also normalized
+    return loss
 end
 
 # Main experiment
@@ -104,9 +70,9 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     println("Created dataset with $(size(X, 1)) samples and $(size(X, 2)) features")
     
     # Create simple quantum feature map
-    n_qubits = 6
+    n_qubits = 4
     n_features = 2
-    n_layers = 4
+    n_layers = 8
     entanglement = linear
 
     if isnothing(seed)
@@ -130,18 +96,36 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     println("  Total parameters: $(2 * n_params(feature_map)) ($(n_params(feature_map)) weights + $(n_params(feature_map)) biases)")
     println("  Seed: $seed")
 
+    loss_fn = K -> kernel_alignment_loss(K, y)
+    trainer = QuantumKernelTrainer(
+        kernel,
+        loss_fn,
+        X,
+        y,
+    )
 
     # Train
-    println("\nStarting gradient descent...\n")
-    losses = train_quantum_kernel!(kernel, X, y, 
-                                  learning_rate=0.0001, 
-                                  n_epochs=300,
-                                  verbose=true)
-    
+    ITERS = 250
+    losses = Vector{Float64}(undef, ITERS+1)
+    function cb(state, loss)
+        println("Iter $(state.iter): loss = $loss")
+        losses[state.iter + 1] = loss
+    end
+
+    println("\nStarting training ...\n")
+    sol = train!(trainer,
+                 optimizer=BFGS(),
+                 iterations=ITERS,
+                 #callback=(state, loss) -> losses[state.iter + 1] = loss
+                 callback=cb
+             )
+    #return sol
+
+   
     # Plot results
     println("\nCreating loss plot...")
     p = Plots.plot(1:length(losses), losses, 
-             xlabel="Epoch", 
+             xlabel="Iterations", 
              ylabel="Loss", 
              title="Quantum Kernel Training Loss",
              label="Training Loss",
@@ -150,13 +134,13 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
              markersize=2,
              markerstrokewidth=0)
     
-    #display(p)
+    # #display(p)
     
-    # Show improvement
-    println("\n=== Results Summary ===")
-    println("Initial loss: $(round(losses[1], digits=6))")
-    println("Final loss:   $(round(losses[end], digits=6))")
-    println("Improvement:  $(round(100 * (1 - losses[end]/losses[1]), digits=2))%")
+    # # Show improvement
+    # println("\n=== Results Summary ===")
+    # println("Initial loss: $(round(losses[1], digits=6))")
+    # println("Final loss:   $(round(losses[end], digits=6))")
+    # println("Improvement:  $(round(100 * (1 - losses[end]/losses[1]), digits=2))%")
     
     # Visualize kernel matrices
     println("\nComputing kernel matrices...")
@@ -169,7 +153,8 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     p_kernels = Plots.plot(p1, p2, p3, layout=(1,3), size=(900,300))
     #display(p_kernels)
     
-    return losses, kernel, p, p_kernels
+    # return losses, kernel, p, p_kernels
+    return kernel, p, p_kernels
 end
 
 # Run the demo

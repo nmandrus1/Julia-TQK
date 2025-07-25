@@ -321,14 +321,13 @@ Compute the gradient of a loss function with respect to kernel parameters.
 """
 function loss_gradient(
     kernel::FidelityKernel, 
+    K::AbstractMatrix,
     loss_fn::Function, 
     X::AbstractMatrix,
     workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map))
 )
     n_samples = size(X, 1)
     
-    # Forward pass
-    K = evaluate(kernel, X; workspace=workspace)
     loss, grad = Zygote.withgradient(loss_fn, K)
     
     # Backward pass - choose path based on workspace capacity

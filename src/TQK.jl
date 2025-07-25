@@ -21,11 +21,14 @@ include("kernels/fidelity.jl")
 include("workspaces/dynamic.jl")
 include("workspaces/preallocated.jl")
 
+include("trainer/quantum_kernel_trainer.jl")
 
 # Export types
 export AbstractQuantumFeatureMap, ReuploadingCircuit, FidelityKernel
 export EntanglementBlock, linear, alternating, all_to_all
 export AbstractFidelityWorkspace, PreallocatedWorkspace, DynamicWorkspace
+export QuantumKernelTrainer
+
 
 # Export functions for feature maps
 export n_qubits, n_features, n_params, map_inputs!
@@ -43,5 +46,10 @@ export loss_gradient
 
 # Export utility functions
 export compute_angles!
+
+# optimization
+export create_optimization_function, train!
+# basic loss functions
+export kernel_alignment_loss
 
 end
