@@ -53,6 +53,9 @@ function train_quantum_kernel!(kernel, X, y;
     fm = kernel.feature_map
     weights = copy(fm.weights)
     biases = copy(fm.biases)
+
+    # allocate workspace
+    ws = create_preallocated_workspace(fm, size(X, 1), memory_budget_gb=8.0)
     
     if verbose
         println("Initial parameters:")
@@ -65,7 +68,7 @@ function train_quantum_kernel!(kernel, X, y;
         loss_fn = K -> kernel_alignment_loss(K, y)
         
         # Forward pass and gradient computation
-        current_loss, (grad_weights, grad_biases) = loss_gradient(kernel, loss_fn, X, memory_budget_gb=0.001)
+        current_loss, (grad_weights, grad_biases) = loss_gradient(kernel, loss_fn, X, ws)
         
         # Current loss
         push!(losses, current_loss)
@@ -97,13 +100,13 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     println("=== Quantum Kernel Gradient Descent Demo ===\n")
     
     # Create dataset
-    X, y = create_simple_dataset(50)
+    X, y = create_simple_dataset(500)
     println("Created dataset with $(size(X, 1)) samples and $(size(X, 2)) features")
     
     # Create simple quantum feature map
-    n_qubits = 8
+    n_qubits = 6
     n_features = 2
-    n_layers = 1
+    n_layers = 4
     entanglement = linear
 
     if isnothing(seed)
@@ -131,13 +134,13 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     # Train
     println("\nStarting gradient descent...\n")
     losses = train_quantum_kernel!(kernel, X, y, 
-                                  learning_rate=0.001, 
-                                  n_epochs=1000,
+                                  learning_rate=0.0001, 
+                                  n_epochs=300,
                                   verbose=true)
     
     # Plot results
     println("\nCreating loss plot...")
-    p = plot(1:length(losses), losses, 
+    p = Plots.plot(1:length(losses), losses, 
              xlabel="Epoch", 
              ylabel="Loss", 
              title="Quantum Kernel Training Loss",
@@ -147,7 +150,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
              markersize=2,
              markerstrokewidth=0)
     
-    display(p)
+    #display(p)
     
     # Show improvement
     println("\n=== Results Summary ===")
@@ -163,11 +166,11 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     p2 = heatmap(K_final, title="Trained Kernel", c=:viridis, clim=(0,1))
     p3 = heatmap(y*y', title="Target Pattern", c=:viridis, clim=(0,1))
     
-    p_kernels = plot(p1, p2, p3, layout=(1,3), size=(900,300))
-    display(p_kernels)
+    p_kernels = Plots.plot(p1, p2, p3, layout=(1,3), size=(900,300))
+    #display(p_kernels)
     
     return losses, kernel, p, p_kernels
 end
 
 # Run the demo
-losses, trained_kernel = run_gradient_descent_demo()
+#losses, trained_kernel, p, p_kernesl = run_gradient_descent_demo()

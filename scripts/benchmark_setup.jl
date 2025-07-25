@@ -1,6 +1,8 @@
 using DrWatson
 @quickactivate "TQK"
 
+using TQK
+
 # simple script that setups variables in qiskit ordering
 # for a simple benchmark in the REPL
 
@@ -17,7 +19,7 @@ function setup_benchmark_vars(; num_qubits = 4, num_features = 6, num_layers = 2
         weights = [elem for n in 0:(num_qubits * num_layers - 1) for elem in repeating_assignment .+ num_features*n]
         x = ones(num_features)
     else
-        weights = ones(nparameters(reup))
+        weights = ones(n_params(reup))
         x = [float(i) for i in 1:num_features]
     end
 
@@ -28,7 +30,7 @@ function setup_benchmark_vars(; num_qubits = 4, num_features = 6, num_layers = 2
     if random_data
         X_data = rand(10, num_features)
     else
-        X_data = [num_features*r + c for r in 0:9, c in 0:num_features-1]
+        X_data = [num_features*r + c for r in 0:499, c in 0:num_features-1]
     end
     return reup, kernel, weights, x, X_data
 end

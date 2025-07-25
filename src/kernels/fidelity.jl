@@ -15,24 +15,9 @@ Computes kernel values as K(x,y) = |⟨0|U†(x)U(y)|0⟩|².
 
 # Fields
 - `feature_map`: A quantum circuit that maps input data to a quantum state
-- `parallel`: Whether to use parallel computation
 """
 mutable struct FidelityKernel
     feature_map::AbstractQuantumFeatureMap
-    parallel::Bool
-end
-
-"""
-    FidelityKernel(feature_map; use_cache=true, cache_size=10000, parallel=true)
-
-Construct a quantum kernel.
-
-# Arguments
-- `feature_map`: Circuit that builds feature map
-- `parallel`: Enable parallel computation
-"""
-function FidelityKernel(feature_map::AbstractQuantumFeatureMap; parallel::Bool=true)
-    return FidelityKernel(feature_map, parallel)
 end
 
 # --- Core Helper Functions ---
@@ -115,29 +100,29 @@ end
 # --- Main Evaluation Functions ---
 
 """
-    evaluate(kernel::FidelityKernel, X::Matrix; memory_budget_gb::Float64=4.0)
+    evaluate(kernel::FidelityKernel, X::Matrix; workspace::AbstractFidelityWorkspace)
 
 Compute the kernel matrix K(X,X) for training data.
-Allocates and returns a new matrix.
+If no workspace is provided, creates a DynamicWorkspace automatically.
 """
-function evaluate(kernel::FidelityKernel, X::Matrix; memory_budget_gb::Float64=4.0)
+function evaluate(kernel::FidelityKernel, X::Matrix; workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map)))
     n_samples = size(X, 1)
     K = zeros(n_samples, n_samples)
-    evaluate!(K, kernel, X; memory_budget_gb=memory_budget_gb)
+    evaluate!(K, kernel, X, workspace)
     return K
 end
 
 """
-    evaluate(kernel::FidelityKernel, X::Matrix, Y::Matrix; memory_budget_gb::Float64=4.0)
+    evaluate(kernel::FidelityKernel, X::Matrix, Y::Matrix; workspace::AbstractFidelityWorkspace)
 
 Compute the kernel matrix K(X,Y) between two datasets.
-Allocates and returns a new matrix.
+If no workspace is provided, creates a DynamicWorkspace automatically.
 """
-function evaluate(kernel::FidelityKernel, X::Matrix, Y::Matrix; memory_budget_gb::Float64=4.0)
+function evaluate(kernel::FidelityKernel, X::Matrix, Y::Matrix; workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map)))
     n_x = size(X, 1)
     n_y = size(Y, 1)
     K = zeros(n_x, n_y)
-    evaluate!(K, kernel, X, Y; memory_budget_gb=memory_budget_gb)
+    evaluate!(K, kernel, X, Y, workspace)
     return K
 end
 
@@ -156,39 +141,50 @@ function evaluate(kernel::FidelityKernel, x::Vector, y::Vector)
 end
 
 """
-    evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_gb::Float64=4.0)
+    evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, workspace::AbstractFidelityWorkspace)
 
 Compute the symmetric kernel matrix K(X,X) with hybrid tiled evaluation.
 """
-function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_gb::Float64=4.0)
+function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, workspace::AbstractFidelityWorkspace)
     n_samples = size(X, 1)
     @argcheck size(K) == (n_samples, n_samples) "K must be $n_samples × $n_samples"
     
     num_qubits = n_qubits(kernel.feature_map)
-    tile_size = calculate_tile_size(num_qubits, memory_budget_gb)
-
-    # compute workspaces and allocate memory for reuse
-    xi_statevectors = [zero_state(num_qubits) for _ in 1:n_samples]
-    xj_statevectors = [zero_state(num_qubits) for _ in 1:n_samples]
+    tile_size = min(get_forward_tile_size(workspace), n_samples)
     
     # Process tiles for the upper triangle
     @inbounds for i_start in 1:tile_size:n_samples
         i_end = min(i_start + tile_size - 1, n_samples)
+        i_size = i_end - i_start + 1
         X_i_view = @view X[i_start:i_end, :]
+
+        # new operation so we reset the workspace 
+        reset!(workspace)
+        
+        # Get views for row tile
+        views_i = get_vectors!(workspace, i_size)
         
         # Compute diagonal block (X_i vs X_i)
-        # NOTE: This function computes all the xi statevectors already so we can just use them!
         K_diag_view = @view K[i_start:i_end, i_start:i_end]
-        evaluate_symmetric_cached!(K_diag_view, kernel, X_i_view, xi_statevectors)
+        evaluate_symmetric_cached!(K_diag_view, kernel, X_i_view, views_i)
 
+        # mark current offset
+        j_block_start = workspace.offset[]
         
         # Compute off-diagonal blocks (X_i vs X_j for j > i)
         for j_start in (i_end + 1):tile_size:n_samples
             j_end = min(j_start + tile_size - 1, n_samples)
+            j_size = j_end - j_start + 1
             X_j_view = @view X[j_start:j_end, :]
             
+            # set current workspace offset to reuse views_j AND AVOID OVERWRITING views_i
+            workspace.offset[] = j_block_start
+
+            # Get views for column tile
+            views_j = get_vectors!(workspace, j_size)
+            
             K_offdiag_view = @view K[i_start:i_end, j_start:j_end]
-            evaluate_asymmetric_cached!(K_offdiag_view, kernel, X_i_view, X_j_view, xi_statevectors, xj_statevectors)
+            evaluate_asymmetric_cached!(K_offdiag_view, kernel, X_i_view, X_j_view, views_i.statevecs, views_j)
             
             # Exploit symmetry
             K[j_start:j_end, i_start:i_end] .= transpose(K_offdiag_view)
@@ -199,36 +195,49 @@ function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix; memory_budget_g
 end
 
 """
-    evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix; memory_budget_gb::Float64=4.0)
+    evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix, workspace::AbstractFidelityWorkspace)
 
 Compute the asymmetric kernel matrix K(X,Y) with hybrid tiled evaluation.
 """
-function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix; memory_budget_gb::Float64=4.0)
+function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix, workspace::AbstractFidelityWorkspace)
     n_x = size(X, 1)
     n_y = size(Y, 1)
     @assert size(K) == (n_x, n_y) "K must be $n_x × $n_y"
     
     num_qubits = n_qubits(kernel.feature_map)
-    # Split budget 50/50 between X and Y tiles
-    tile_size = calculate_tile_size(num_qubits, memory_budget_gb, 0.5)
-
-    # compute workspaces and allocate memory for reuse
-    x_statevectors = [zero_state(num_qubits) for _ in 1:n_x]
-    y_statevectors = [zero_state(num_qubits) for _ in 1:n_y]
     
-    # Efficient loop order: cache X tile and reuse against all Y tiles
+    # For asymmetric case, we can split the forward capacity
+    max_tile = get_forward_tile_size(workspace)
+    tile_size = min(div(max_tile, 2), max(n_x, n_y))
+    
+    # Process in tiles
     @inbounds for i_start in 1:tile_size:n_x
         i_end = min(i_start + tile_size - 1, n_x)
+        i_size = i_end - i_start + 1
         X_view = @view X[i_start:i_end, :]
-
-        for i in 1:n_x
-            # sets statevectors to zero and applys feature map
-            create_statevec!(x_statevectors[i], kernel.feature_map, @view X_view[i, :])
+        
+        # Get X statevectors
+        reset!(workspace)
+        x_statevectors = get_vectors!(workspace, i_size)
+        
+        # Compute X statevectors for this tile
+        for (idx, i) in enumerate(1:i_size)
+            create_statevec!(x_statevectors[idx], kernel.feature_map, @view X_view[i, :])
         end
+
+        # checkpoint workspace 
+        j_block_start = workspace.offset[]
         
         for j_start in 1:tile_size:n_y
             j_end = min(j_start + tile_size - 1, n_y)
+            j_size = j_end - j_start + 1
             Y_view = @view Y[j_start:j_end, :]
+
+            # avoid overwriting views_i by resetting workspace offset
+            workspace.offset[] = j_block_start             
+
+            # Get Y statevectors
+            y_statevectors = get_vectors!(workspace, j_size)
             
             K_view = @view K[i_start:i_end, j_start:j_end]
             evaluate_asymmetric_cached!(K_view, kernel, X_view, Y_view, x_statevectors, y_statevectors)
@@ -241,12 +250,13 @@ end
 # --- Core Cached Implementations ---
 
 """
-    evaluate_symmetric_cached!(K_view, kernel, X_view)
+    evaluate_symmetric_cached!(K_view, kernel, X_view, statevectors)
 
 Computes one symmetric tile with all statevectors cached in memory.
 Only computes upper triangle and uses symmetry.
 """
-function evaluate_symmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, X_view::AbstractMatrix, statevectors::AbstractVector{T}) where {T<:AbstractArrayReg}
+function evaluate_symmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, 
+                                  X_view::AbstractMatrix, statevectors::AbstractVector{T}) where {T<:AbstractArrayReg}
     n_samples = size(X_view, 1)
     
     # Pre-compute all statevectors
@@ -266,195 +276,189 @@ function evaluate_symmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKern
 end
 
 """
-    evaluate_asymmetric_cached!(K_view, kernel, X_view, Y_view)
+    evaluate_asymmetric_cached!(K_view, kernel, X_view, Y_view, x_statevectors, y_statevectors)
 
 Computes one asymmetric tile with all statevectors cached in memory.
 """
-function evaluate_asymmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, X_view::AbstractMatrix, Y_view::AbstractMatrix,
-                                   x_statevectors::AbstractVector{T1}, workspace::AbstractVector{T2}) where {T1<:AbstractArrayReg, T2<:AbstractArrayReg}   
+function evaluate_asymmetric_cached!(K_view::AbstractMatrix, kernel::FidelityKernel, 
+                                   X_view::AbstractMatrix, Y_view::AbstractMatrix,
+                                   x_statevectors::AbstractVector{T1}, 
+                                   y_statevectors::AbstractVector{T2}) where {T1<:AbstractArrayReg, T2<:AbstractArrayReg}   
 
     n_x = size(X_view, 1)
     n_y = size(Y_view, 1)
 
+    # Compute Y statevectors
     for j in 1:n_y
-        # sets statevectors to zero and applys feature map
-        create_statevec!(workspace[j], kernel.feature_map, @view Y_view[j, :])
+        create_statevec!(y_statevectors[j], kernel.feature_map, @view Y_view[j, :])
     end
     
     # Compute kernel values
     @inbounds for i in 1:n_x
         for j in 1:n_y
-            K_view[i, j] = compute_kernel_value_cached(x_statevectors[i], workspace[j])
+            K_view[i, j] = compute_kernel_value_cached(x_statevectors[i], y_statevectors[j])
         end
     end
 end
 
-
 # --- Gradient Implementations ---
 
 """
-    loss_gradient(kernel::FidelityKernel, loss_fn::Function, X::AbstractMatrix; memory_budget_gb::Float64=4.0)
+    loss_gradient(kernel::FidelityKernel, loss_fn::Function, X::AbstractMatrix, 
+                 workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map)))
 
 Compute the gradient of a loss function with respect to kernel parameters.
-Automatically selects between in-memory and tiled computation based on available memory.
 
 # Arguments
 - `kernel`: The FidelityKernel instance
 - `loss_fn`: Loss function that takes a kernel matrix and returns a scalar
 - `X`: Data matrix (n_samples × n_features)
-- `memory_budget_gb`: Memory budget in GB
+- `workspace`: Workspace for memory management
 
 # Returns
-- `d_theta`: Gradient vector of length n_parameters
+- `loss`: The loss value
+- `(d_weights, d_biases)`: Gradient vectors
 """
 function loss_gradient(
     kernel::FidelityKernel, 
     loss_fn::Function, 
-    X::AbstractMatrix; 
-    memory_budget_gb::Float64=4.0
+    X::AbstractMatrix,
+    workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map))
 )
     n_samples = size(X, 1)
-    fm = kernel.feature_map
-    num_qubits = n_qubits(fm)
     
-    # Check if we can fit all statevectors in memory
-    bytes_per_statevec = (2^num_qubits) * sizeof(ComplexF64)
-    total_bytes_needed = n_samples * bytes_per_statevec
-    memory_budget_bytes = memory_budget_gb * (1024^3)
-    
-    # Forward pass - always use existing tiled evaluation
-    K = evaluate(kernel, X; memory_budget_gb=memory_budget_gb)
+    # Forward pass
+    K = evaluate(kernel, X; workspace=workspace)
     loss, grad = Zygote.withgradient(loss_fn, K)
     
-    # Choose computation path based on memory constraints
-    if total_bytes_needed <= memory_budget_bytes
-        # In-memory path: all statevectors fit
-        # have to take the index because this is a tuple for some reason
-        return loss, loss_gradient_inmemory!(kernel, grad[1], X)
+    # Backward pass - choose path based on workspace capacity
+    if n_samples <= get_backward_tile_size(workspace)
+        # All samples fit in memory with 2-way split
+        return loss, loss_gradient_with_workspace!(kernel, grad[1], X, workspace)
     else
-        # Tiled path: need to work in chunks
-        # have to take the index because this is a tuple for some reason
-        return loss, loss_gradient_tiled!(kernel, grad[1], X; memory_budget_gb=memory_budget_gb)
+        # Need tiling with 3-way split
+        return loss, loss_gradient_tiled_with_workspace!(kernel, grad[1], X, workspace)
     end
 end
 
 """
-    loss_gradient_inmemory!(kernel, dL_dK, X)
+    loss_gradient_with_workspace!(kernel, dL_dK, X, workspace)
 
-Compute gradients when all statevectors fit in memory.
+Compute gradients using workspace memory without tiling (2-way memory split).
 """
-function loss_gradient_inmemory!(
+function loss_gradient_with_workspace!(
     kernel::FidelityKernel,
     dL_dK::AbstractMatrix,
-    X::AbstractMatrix
+    X::AbstractMatrix,
+    workspace::AbstractFidelityWorkspace
 )
     n_samples = size(X, 1)
     fm = kernel.feature_map
-    num_params = n_params(fm)
-    num_qubits = n_qubits(fm)
     
-    # init angle gradient collection
-    grad_collector = zeros(ComplexF64, num_params)
-    # init real componenet collection
-    grad_angles = zeros(Float64, num_params)
-
-    # parameter_gradients -- interleaved vector 
-    grad_params = zeros(Float64, num_params * 2)
+    # Get gradient buffers and reset
+    reset!(workspace)
+    grad_collector, grad_angles, _ = get_grad_buffers!(workspace)
+    
+    # Get views for backward pass (2-way split: statevecs + adjoints)
+    views = get_backward_views(workspace, n_samples)
     
     # Pre-compute all statevectors
-    statevecs = [create_statevec!(zero_state(num_qubits), fm, @view X[i, :]) for i in 1:n_samples]
+    for i in 1:n_samples
+        create_statevec!(views.statevecs[i], fm, @view X[i, :])
+    end
     
-    # Pre-allocate adjoint accumulator for reuse
-    adjoint_accumulator = zero_state(ComplexF64, num_qubits)
+    # Initialize adjoints to zero
+    for adjoint in views.adjoints
+        zero!(adjoint)
+    end
     
     # Process each data point
     for i in 1:n_samples
-        # Build complete adjoint for data point i
-        zero!(adjoint_accumulator)
+        # Accumulate adjoints
         accumulate_adjoints!(
-            adjoint_accumulator,
-            statevecs[i],
-            statevecs,
+            views.adjoints[i],
+            views.statevecs[i],
+            views.statevecs,
             dL_dK,
             i,
             1:n_samples
         )
         
-        # Backpropagate the completed adjoint
+        # Backpropagate
         compute_angle_gradients!(
-            statevecs[i],
-            adjoint_accumulator,
+            views.statevecs[i],
+            views.adjoints[i],
             @view(X[i, :]),
             fm,
             grad_collector,
             grad_angles
         )
-
+        
+        _, _, grad_params = get_grad_buffers!(workspace)
         gradient_chain_rule!(grad_params, fm, grad_angles, @view X[i, :])
     end
-
-    # unpack gradients into their own vectors
-    d_weights = [grad_params[i] for i in findall(isodd, eachindex(grad_params))]
-    d_biases = [grad_params[i] for i in findall(iseven, eachindex(grad_params))]
     
-    return d_weights, d_biases
+    return extract_gradients(workspace)
 end
 
 """
-    loss_gradient_tiled!(kernel, dL_dK, X; memory_budget_gb)
+    loss_gradient_tiled_with_workspace!(kernel, dL_dK, X, workspace)
 
-Compute gradients using tiled computation for memory-constrained scenarios.
+Compute gradients using workspace memory with tiling (3-way memory split).
 """
-function loss_gradient_tiled!(
+function loss_gradient_tiled_with_workspace!(
     kernel::FidelityKernel,
     dL_dK::AbstractMatrix,
-    X::AbstractMatrix;
-    memory_budget_gb::Float64=4.0
+    X::AbstractMatrix,
+    workspace::AbstractFidelityWorkspace
 )
     n_samples = size(X, 1)
     fm = kernel.feature_map
-    num_params = n_params(fm)
-    num_qubits = n_qubits(fm)
     
-    # init angle gradient collection
-    grad_collector = zeros(ComplexF64, num_params)
-    # init real componenet collection
-    grad_angles = zeros(Float64, num_params)
-
-    # parameter_gradients -- interleaved vector 
-    grad_params = zeros(Float64, num_params * 2)
+    # Get gradient buffers and reset
+    reset!(workspace)
+    grad_collector, grad_angles, _ = get_grad_buffers!(workspace)
     
-    # Calculate tile size - split budget between row states, col states, and adjoints
-    tile_size = calculate_tile_size(num_qubits, memory_budget_gb, 1/3)
+    # Get tile size for 3-way split
+    tile_size = min(get_backward_tiled_tile_size(workspace), n_samples)
     
     # Process in row tiles
     for i_start in 1:tile_size:n_samples
         i_end = min(i_start + tile_size - 1, n_samples)
         row_tile_size = i_end - i_start + 1
         
-        # Compute row statevectors
-        row_statevecs = [create_statevec!(zero_state(num_qubits), fm, @view X[i, :]) 
-                        for i in i_start:i_end]
+        # Get views for this tile (3-way split for tiling)
+        # Note: col_size may be different from row_tile_size
+        max_col_size = tile_size
+        views = get_backward_tiled_views(workspace, row_tile_size, max_col_size)
         
-        # Initialize adjoint accumulators for this tile
-        adjoint_accumulators = [zero_state(ComplexF64, num_qubits) for _ in 1:row_tile_size]
+        # Compute row statevectors
+        for (idx, i) in enumerate(i_start:i_end)
+            create_statevec!(views.statevecs[idx], fm, @view X[i, :])
+            zero!(views.adjoints[idx])
+        end
         
         # Accumulate contributions from all column tiles
         for j_start in 1:tile_size:n_samples
             j_end = min(j_start + tile_size - 1, n_samples)
+            col_size = j_end - j_start + 1
             
-            # Compute or reuse column statevectors
             if i_start == j_start
-                col_statevecs = row_statevecs
+                # Reuse row statevectors for diagonal block
+                col_statevecs = views.statevecs
             else
-                col_statevecs = [create_statevec!(zero_state(num_qubits), fm, @view X[j, :]) 
-                               for j in j_start:j_end]
+                # Use the dedicated column statevector region
+                col_statevecs = @view views.col_statevecs[1:col_size]
+                
+                for (idx, j) in enumerate(j_start:j_end)
+                    create_statevec!(col_statevecs[idx], fm, @view X[j, :])
+                end
             end
             
             # Accumulate adjoints for this tile combination
             accumulate_adjoints_tiled!(
-                adjoint_accumulators,
-                row_statevecs,
+                views.adjoints,
+                views.statevecs,
                 col_statevecs,
                 dL_dK,
                 i_start:i_end,
@@ -465,23 +469,20 @@ function loss_gradient_tiled!(
         # Backpropagate completed adjoints for this row tile
         for (i_local, i_global) in enumerate(i_start:i_end)
             compute_angle_gradients!(
-                row_statevecs[i_local],
-                adjoint_accumulators[i_local],
+                views.statevecs[i_local],
+                views.adjoints[i_local],
                 @view(X[i_global, :]),
                 fm,
                 grad_collector,
                 grad_angles
             )
-
+            
+            _, _, grad_params = get_grad_buffers!(workspace)
             gradient_chain_rule!(grad_params, fm, grad_angles, @view X[i_global, :])
         end
-
     end
-    # unpack gradients into their own vectors
-    d_weights = [grad_params[i] for i in findall(isodd, eachindex(grad_params))]
-    d_biases = [grad_params[i] for i in findall(iseven, eachindex(grad_params))]
     
-    return d_weights, d_biases
+    return extract_gradients(workspace)
 end
 
 # --- Workhorse Functions (No Memory Allocation) ---
@@ -551,14 +552,10 @@ function accumulate_adjoints_tiled!(
     end
 end
 
-
 """
-    compute_angle_gradients(psi, adjoint, x, feature_map)
+    compute_angle_gradients!(psi, adjoint, x, feature_map, grad_collector, real_components)
 
 Backpropagate a single adjoint state to get gradients with respect to gate angles.
-
-# Returns
-- A `Vector{Float64}` of gradients ∂L/∂θ for the given data point `x`.
 """
 function compute_angle_gradients!(
     psi::ArrayReg,
