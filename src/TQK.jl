@@ -29,6 +29,10 @@ include("qiskit/qiskit_interface.jl")
 include("data_generation/quantum_data.jl")
 include("data_generation/rbf_data.jl")
 
+# experiment configuration
+include("experiment_configuration.jl")
+
+
 # Export types
 export AbstractQuantumFeatureMap, ReuploadingCircuit, FidelityKernel
 export EntanglementBlock, linear, alternating, all_to_all
@@ -37,6 +41,9 @@ export QuantumKernelTrainer
 
 # Qiskit
 export PauliFeatureMapConfig
+
+# Config
+export ExperimentConfig, DataConfig, KernelConfig, RBFKernelConfig, ReuploadingKernelConfig, PauliKernelConfig
 
 # Export functions for feature maps
 export n_qubits, n_features, n_params, map_inputs!
