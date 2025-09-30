@@ -1,0 +1,4 @@
+[deps]
+qiskit = "<2"
+qiskit-machine-learning = ""
+qiskit-aer = ""

@@ -28,3 +28,18 @@ using DrWatson
 @quickactivate "TQK"
 ```
 which auto-activate the project and enable local path handling from DrWatson.
+
+## Notes
+
+<!-- |> Dependencies `Conda` and `PyCall` must be installed in that order (hopefully is done automatically) -->
+|> For model comparision, data dimension = 2
+
+## Experiment setup
+
+There are 3 scripts
+
+- `01_generate_data.jl` -- Generate the classical/quantum data sets of varying complexity (configuration defined in script file)
+- `02_train_kernels.jl` -- Trains quantum kernels/searches for PualiKernel on datasets & outputs corresponding kernel matrices
+- `03_train_svm.jl` -- Uses generated kernels to train SVMs on train/test splits 
+
+

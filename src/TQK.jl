@@ -23,12 +23,20 @@ include("workspaces/preallocated.jl")
 
 include("trainer/quantum_kernel_trainer.jl")
 
+include("qiskit/qiskit_interface.jl")
+
+# data generation
+include("data_generation/quantum_data.jl")
+include("data_generation/rbf_data.jl")
+
 # Export types
 export AbstractQuantumFeatureMap, ReuploadingCircuit, FidelityKernel
 export EntanglementBlock, linear, alternating, all_to_all
 export AbstractFidelityWorkspace, PreallocatedWorkspace, DynamicWorkspace
 export QuantumKernelTrainer
 
+# Qiskit
+export PauliFeatureMapConfig
 
 # Export functions for feature maps
 export n_qubits, n_features, n_params, map_inputs!
@@ -51,5 +59,12 @@ export compute_angles!
 export create_optimization_function, train!
 # basic loss functions
 export kernel_alignment_loss
+
+# Pauli Feature Map Functions
+export create_pauli_feature_map, compute_pauli_kernel_matrix
+
+# data generation
+export generate_pauli_expectation_data_grid, generate_pseudo_svm_dataset
+
 
 end
