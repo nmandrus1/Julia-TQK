@@ -1,8 +1,10 @@
-
 using DrWatson
 using Random
 using PythonCall
+using Dates
 using OptimizationOptimJL
+
+using StructTypes
 
 # ============================================================================
 # Base Configuration Types
@@ -44,7 +46,7 @@ end
 # ============================================================================
 
 @kwdef struct RBFKernelConfig <: KernelConfig
-    kernel_type::String = "rbf"
+    kernel_type::Symbol= :rbf
     gamma::Union{Float64, String} = "auto"  # or specific value
     
     # If "auto", will use cross-validation to find best gamma
@@ -55,7 +57,7 @@ end
 """
 Produce an RBF kernel (just returns the configuration since sklearn handles it)
 """
-function produce_kernel(config::RBFKernelConfig, data_config::DataConfig)
+function produce_kernel(config::RBFKernelConfig, data_config::DataConfig; n_samples::Union{Int, Nothing}=nothing)
     # For RBF, we don't actually "train" - just return the gamma
     if config.gamma == "auto"
         @info "RBF kernel will use cross-validation to select gamma"
@@ -71,40 +73,49 @@ end
 # Reuploading Quantum Kernel Configuration
 # ============================================================================
 
+#Optimizer configuration? 
+
 @kwdef struct ReuploadingKernelConfig <: KernelConfig
-    kernel_type::String = "reuploading"
+    kernel_type::Symbol= :reuploading
     
     # Circuit architecture
-    n_qubits::Int = 4
-    n_layers::Int = 2
-    entanglement::String = "linear"  # "linear", "alternating", "all_to_all"
+    n_qubits::Int
+    n_features::Int
+    n_layers::Int
+    entanglement::String = "linear"
     
     # Training configuration
-    optimizer::String = "LBFGS"
+    optimizer::String #"Adam" or "LBFGS"
     max_iterations::Int = 100
-    loss_function::String = "svm_loss"
+    loss_function::String = "svm_loss"  # or "svm_loss"
     
     # Optimization parameters
     learning_rate::Float64 = 0.01
     convergence_tol::Float64 = 1e-6
     
     # Memory management
-    memory_budget_gb::Float64 = 8.0
+    memory_budget_gb::Float64 = 4.0
     
     # Reproducibility
-    seed::Int = 42
-end
+    seed::Int
+    end
 
 """
 Produce a trained reuploading quantum kernel
 """
-function produce_kernel(config::ReuploadingKernelConfig, data_config::DataConfig)
+function produce_kernel(config::ReuploadingKernelConfig, data_config::DataConfig; n_samples::Union{Int, Nothing}=nothing)
     @info "Training Reuploading Quantum Kernel" config.n_qubits config.n_layers config.entanglement
     
     # Load data
     data = load(data_config.data_path)
     X_train = data["X_train"]
     y_train = data["y_train"]
+    
+    # Use subset if specified
+    if !isnothing(n_samples)
+        X_train = X_train[1:min(n_samples, size(X_train, 1)), :]
+        y_train = y_train[1:min(n_samples, length(y_train))]
+        @info "Using data subset" n_samples
     
     # Create feature map
     entanglement_enum = if config.entanglement == "linear"
@@ -171,6 +182,7 @@ function produce_kernel(config::ReuploadingKernelConfig, data_config::DataConfig
         :training_solution => sol
     )
 end
+end
 
 # ============================================================================
 # Pauli Kernel Configuration with Search
@@ -184,21 +196,18 @@ end
 end
 
 @kwdef struct PauliKernelConfig <: KernelConfig
-    kernel_type::String = "pauli"
+    kernel_type::Symbol = :pauli
     
     # Circuit parameters
-    n_qubits::Int = 4
-    reps::Int = 2
-    entanglement::String = "full"  # "full", "linear", "circular"
+    n_qubits::Int = 2
+    reps::Vector{Int} = [1, 2, 3]
+    entanglement::Vector{String} = ["full", "linear", "circular"]
     
     # Search configuration
-    search_strategy::String = "random"  # "random", "exhaustive", "bayesian"
+    search_strategy::String = "random"  
     n_search_iterations::Int = 50
     search_constraints::PauliSearchConstraints = PauliSearchConstraints()
-    
-    # If not searching, specify paulis directly
-    fixed_paulis::Union{Nothing, Vector{String}} = nothing
-    
+       
     # Cross-validation for search
     cv_folds::Int = 3
     cv_samples::Int = 100  # Use subset of training data for CV
@@ -350,13 +359,20 @@ end
 """
 Produce a Pauli feature map kernel (with optional search)
 """
-function produce_kernel(config::PauliKernelConfig, data_config::DataConfig)
+function produce_kernel(config::PauliKernelConfig, data_config::DataConfig; n_samples::Union{Int, Nothing}=nothing)
     @info "Producing Pauli Quantum Kernel" config.n_qubits config.reps
     
     # Load data
     data = load(data_config.data_path)
     X_train = data["X_train"]
     y_train = data["y_train"]
+    
+    # Use subset if specified
+    if !isnothing(n_samples)
+        X_train = X_train[1:min(n_samples, size(X_train, 1)), :]
+        y_train = y_train[1:min(n_samples, length(y_train))]
+        @info "Using data subset" n_samples
+    end
     
     # Determine Pauli strings (either search or use fixed)
     if !isnothing(config.fixed_paulis)
@@ -405,8 +421,11 @@ end
     # Data configuration
     data_config::DataConfig
     
-    # Model configurations (one or more)
-    kernel_configs::Vector{KernelConfig}
+    # Model configuration (this model learns the data) 
+    kernel_config::KernelConfig
+    
+    # Learning curve configuration
+    learning_curve_sizes::Vector{Int} = Int[]  # Empty means no learning curves
     
     # Experiment tracking
     seed::Int = 42
@@ -423,12 +442,72 @@ function config_to_dict(config::ExperimentConfig)
         n_samples = config.data_config.n_samples,
         n_features = config.data_config.n_features,
         dataset_type = config.data_config.dataset_type,
-        num_kernels = length(config.kernel_configs),
+        kernel_type = config.kernel_config.kernel_type,
         seed = config.seed,
         created_at = config.created_at
     )
 end
 
+"""
+Constructor to create an ExperimentConfig from a flat dictionary,
+typically generated from a DataFrame row.
+"""
+function ExperimentConfig(d::Dict{Symbol, Any})
+    # --- Reconstruct DataConfig ---
+    dataset_type = d[:dataset_type]
+    n_features = d[:n_features]
+    seed = d[:seed]
+    
+    local data_params, data_name
+    if dataset_type == "rbf"
+        gamma = d[:rbf_gamma]
+        n_sv = d[:n_support_vectors]
+        data_params = Dict(:gamma => gamma, :n_support_vectors => n_sv)
+        data_name = "rbf_g$(gamma)_sv$(n_sv)"
+    else # quantum_pauli
+        paulis = split(d[:quantum_paulis], "-")
+        reps = d[:quantum_reps]
+        data_params = Dict(:n_qubits => n_features, :paulis => paulis, :reps => reps)
+        data_name = "quantum_p$(d[:quantum_paulis])_r$(reps)"
+    end
+
+    data_config = DataConfig(
+        dataset_type = dataset_type,
+        dataset_name = data_name,
+        n_samples = d[:n_samples],
+        n_features = n_features,
+        data_params = data_params,
+        seed = seed
+    )
+
+    # --- Reconstruct KernelConfig Array ---
+    kernel_type = Symbol(d[:kernel_type])
+    
+    kernel_configs = KernelConfig[]
+
+    kernel_type = if kernel_type == :rbf
+        RBFKernelConfig(gamma="auto")
+    elseif kernel_type == :reuploading
+        ReuploadingKernelConfig(
+            n_qubits = n_features, n_layers = 2, entanglement = "linear",
+            max_iterations = 50, seed = seed
+        )
+    elseif kernel_type == :pauli
+        PauliKernelConfig(
+            n_qubits = n_features, reps = 2, n_search_iterations = 20, seed = seed
+        )
+    end
+
+    # --- Construct the final ExperimentConfig ---
+    return ExperimentConfig(
+        experiment_name = d[:experiment_name],
+        data_config = data_config,
+        kernel_configs = kernel_configs,
+        learning_curve_sizes = d[:learning_curve_sizes],
+        seed = seed
+    )
+end
+# 
 # ============================================================================
 # Pipeline Functions
 # ============================================================================
@@ -488,17 +567,45 @@ function prepare_data!(config::ExperimentConfig)
 end
 
 """
-Step 2: Produce all kernels
+Step 2: Produce all kernels with optional learning curves
 """
 function produce_all_kernels(config::ExperimentConfig)
-    kernels = Dict{String, Any}()
+    results = Dict{String, Any}()
     
     for (i, kernel_config) in enumerate(config.kernel_configs)
         kernel_name = "$(kernel_config.kernel_type)_$i"
-        @info "Producing kernel $kernel_name"
+        @info "Processing kernel $kernel_name"
         
-        kernel_result = produce_kernel(kernel_config, config.data_config)
-        kernels[kernel_name] = kernel_result
+        if isempty(config.learning_curve_sizes)
+            # Single run on full training data
+            @info "Single training run on full data"
+            kernel_result = produce_kernel(kernel_config, config.data_config)
+            results[kernel_name] = kernel_result
+            
+        else
+            # Learning curve: Phase 1 (hyperparameter selection) + Phase 2 (learning curves)
+            @info "Running learning curves" config.learning_curve_sizes
+            
+            # Phase 1: Hyperparameter selection on full training data
+            @info "Phase 1: Hyperparameter selection on full training data"
+            best_config = select_hyperparameters(kernel_config, config.data_config)
+            
+            # Phase 2: Train on increasing data sizes
+            @info "Phase 2: Training on increasing data sizes"
+            curve_results = Dict{Int, Any}()
+            
+            for n_samples in config.learning_curve_sizes
+                @info "Training with n=$n_samples samples"
+                kernel_result = produce_kernel(best_config, config.data_config, n_samples=n_samples)
+                curve_results[n_samples] = kernel_result
+            end
+            
+            results[kernel_name] = Dict(
+                :type => kernel_config.kernel_type,
+                :best_config => best_config,
+                :learning_curves => curve_results
+            )
+        end
         
         # Save kernel result
         kernel_params = @dict(
@@ -509,12 +616,90 @@ function produce_all_kernels(config::ExperimentConfig)
         
         kernel_filename = savename(kernel_params, "jld2")
         kernel_filepath = datadir("kernels", config.experiment_name, kernel_filename)
-        
-        wsave(kernel_filepath, kernel_result)
+        wsave(kernel_filepath, results[kernel_name])
         @info "Kernel saved" kernel_filepath
     end
     
-    return kernels
+    return results
+end
+
+"""
+Phase 1: Select best hyperparameters for a kernel
+For RBF: Cross-validate gamma on full training data
+For Reuploading: Already optimizes on full data, return same config
+For Pauli: Run search on full data, return best config
+"""
+function select_hyperparameters(config::KernelConfig, data_config::DataConfig)
+    if config isa RBFKernelConfig
+        if config.gamma == "auto"
+            @info "Cross-validating RBF gamma on full training data"
+            # Run CV to select best gamma, return updated config
+            data = load(data_config.data_path)
+            X_train = data["X_train"]
+            y_train = data["y_train"]
+            
+            # Simple CV (you can use a proper CV library)
+            best_gamma = config.gamma_range[1]
+            best_score = -Inf
+            
+            for gamma in config.gamma_range
+                # Compute KTA as selection metric
+                K = exp.(-gamma .* pairwise_squared_distances(X_train))
+                y_outer = y_train * y_train'
+                kta = sum(K .* y_outer) / (sqrt(sum(K.^2)) * sqrt(sum(y_outer.^2)))
+                
+                if kta > best_score
+                    best_score = kta
+                    best_gamma = gamma
+                end
+            end
+            
+            @info "Selected gamma" best_gamma best_score
+            return RBFKernelConfig(gamma=best_gamma)
+        else
+            return config  # Gamma already specified
+        end
+        
+    elseif config isa ReuploadingKernelConfig
+        # Reuploading already trains on full data in produce_kernel
+        # Just return the config as-is
+        return config
+        
+    elseif config isa PauliKernelConfig
+        if isnothing(config.fixed_paulis)
+            @info "Searching for best Pauli strings on full training data"
+            data = load(data_config.data_path)
+            X_train = data["X_train"]
+            y_train = data["y_train"]
+            
+            best_paulis, best_score, _ = search_best_pauli_kernel(config, X_train, y_train)
+            
+            @info "Selected Pauli strings" best_paulis best_score
+            return PauliKernelConfig(
+                n_qubits = config.n_qubits,
+                reps = config.reps,
+                entanglement = config.entanglement,
+                fixed_paulis = best_paulis,
+                seed = config.seed
+            )
+        else
+            return config  # Paulis already specified
+        end
+    end
+end
+
+# Helper for RBF gamma selection
+function pairwise_squared_distances(X::Matrix)
+    n = size(X, 1)
+    D = zeros(n, n)
+    for i in 1:n
+        for j in i:n
+            d = sum((X[i, :] - X[j, :]).^2)
+            D[i, j] = d
+            D[j, i] = d
+        end
+    end
+    return D
 end
 
 """
@@ -541,61 +726,13 @@ end
 # Example Usage
 # ============================================================================
 
-function example_experiment()
-    # Define a simple experiment comparing all three kernel types
-    
-    exp_config = ExperimentConfig(
-        experiment_name = "quantum_vs_classical_comparison",
-        description = "Compare RBF, Reuploading, and Pauli kernels on RBF-generated data",
-        
-        data_config = DataConfig(
-            dataset_type = "rbf",
-            n_samples = 500,
-            n_features = 6,
-            test_size = 0.2,
-            data_params = Dict(
-                :gamma => 1.0,
-                :n_support_vectors => 20
-            ),
-            seed = 42
-        ),
-        
-        kernel_configs = [
-            RBFKernelConfig(
-                gamma = "auto",
-                gamma_range = [0.1, 1.0, 10.0]
-            ),
-            
-            ReuploadingKernelConfig(
-                n_qubits = 4,
-                n_layers = 2,
-                entanglement = "linear",
-                optimizer = "LBFGS",
-                max_iterations = 50,
-                seed = 42
-            ),
-            
-            PauliKernelConfig(
-                n_qubits = 4,
-                reps = 2,
-                entanglement = "full",
-                search_strategy = "random",
-                n_search_iterations = 20,
-                search_constraints = PauliSearchConstraints(
-                    base_paulis = ["X", "Y", "Z"],
-                    max_pauli_order = 2,
-                    min_num_terms = 1,
-                    max_num_terms = 3
-                ),
-                seed = 42
-            )
-        ],
-        
-        seed = 42
-    )
-    
-    # Run the experiment
-    kernels = run_experiment(exp_config)
-    
-    return exp_config, kernels
-end
+
+# Define how to handle the abstract type
+StructTypes.StructType(::Type{ExperimentConfig}) = StructTypes.Struct()
+StructTypes.StructType(::Type{KernelConfig}) = StructTypes.AbstractType()
+StructTypes.subtypekey(::Type{KernelConfig}) = :kernel_type
+StructTypes.subtypes(::Type{KernelConfig}) = (
+    rbf = RBFKernelConfig,
+    reuploading = ReuploadingKernelConfig,
+    pauli = PauliKernelConfig
+)

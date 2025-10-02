@@ -1,3 +1,4 @@
+using Base: Experimental
 
 using DrWatson
 @quickactivate "TQK"
@@ -5,6 +6,45 @@ using DrWatson
 using TQK
 using DataFrames
 using JLD2
+using JSON3
+
+# ============================================================================
+# Helper for dataframe saving
+# ============================================================================
+
+"""
+Recursively flatten any struct or dictionary into a flat dictionary.
+Uses dot notation for nested field names (e.g., "data_config.n_samples").
+"""
+function flatten_struct(obj; prefix::String="", sep::String=".")
+    result = Dict{String, Any}()
+    
+    # Handle different types
+    if obj isa Dict
+        for (k, v) in obj
+            key_str = string(k)
+            new_prefix = isempty(prefix) ? key_str : prefix * sep * key_str
+            merge!(result, flatten_struct(v, prefix=new_prefix, sep=sep))
+        end
+    elseif typeof(obj) <: Number || obj isa String || obj isa Symbol || obj isa Bool
+        # Base types - just store
+        result[prefix] = obj
+    elseif obj isa AbstractArray
+        # Store arrays as-is (you could serialize if needed)
+        result[prefix] = obj
+    elseif obj isa Nothing
+        result[prefix] = missing
+    else
+        # It's a struct - get all fieldnames
+        for field in fieldnames(typeof(obj))
+            value = getfield(obj, field)
+            new_prefix = isempty(prefix) ? string(field) : prefix * sep * string(field)
+            merge!(result, flatten_struct(value, prefix=new_prefix, sep=sep))
+        end
+    end
+    
+    return result
+end
 
 # ============================================================================
 # Grid Definition
@@ -12,156 +52,151 @@ using JLD2
 
 """
 Define the parameter grid for experiments.
-Returns vectors of parameter values to be combined.
+This function now separates parameters into logical groups.
 """
 function define_parameter_grid()
-    return Dict(
-        # Data parameters
-        :dataset_type => ["rbf", "quantum_pauli"],
-        :n_samples => [500, 1000],
-        :n_features => [4, 6],
-        
-        # RBF data specific
-        :rbf_gamma => [0.1, 1.0, 10.0],
-        :n_support_vectors => [10, 20],
-        
-        # Quantum data specific
-        :quantum_paulis => [["Z", "ZZ"], ["X", "XY", "XYZ"]],
-        :quantum_reps => [1, 2],
-        
-        # Kernel types to test
-        :kernel_types => [
-            [:rbf],                    # RBF only
-            [:reuploading],           # Reuploading only
-            [:pauli],                 # Pauli only
-            [:rbf, :reuploading, :pauli]  # All three
-        ],
-        
-        # Learning curve sizes
-        :learning_curve_sizes => [
-            [50, 100, 200],           # Small curves
-            [100, 200, 400, 800]      # Full curves
-        ],
-        
-        # Seeds for replicates
+    n_samples = 10000
+
+    # --- Core Parameters (Common to all experiments) ---
+    core_params = Dict(
+        :n_samples => n_samples,
+        :n_features => 2,
+        :learning_curve_sizes => [collect(100:100:n_samples)],
         :seed => [42, 123, 456]
     )
+
+    # --- RBF-Specific Data Parameters ---
+    rbf_params = Dict(
+        :dataset_type => "rbf",
+        :rbf_gamma => [0.1, 1.0, 10.0],
+        :n_support_vectors => [10, 50, 100, 1000]
+    )
+
+    # --- Quantum-Specific Data Parameters ---
+    quantum_params = Dict(
+        :dataset_type => "quantum_pauli",
+        :quantum_paulis => [["Z", "ZZ"], ["X", "XY"], ["XYZ"]],
+        :quantum_entanglement => ["full", "linear"],
+        :quantum_reps => [1, 2]
+    )
+    
+    # --- Reuploading-Specific Data Parameters ---
+    reuploading_params = Dict(
+        :kernel_type => :reuploading,
+        :reuploading_n_qubits => [2, 3, 4, 5, 6, 7, 8],
+        :reuploading_n_layers => [1, 2, 3, 4],
+        :reuploading_optimizer => ["LBFGS", "Adam"]
+    )
+
+    
+    # Generate all data configurations 
+    classical_data_configs = merge(core_params, rbf_params)
+    quantum_data_configs = merge(core_params, quantum_params)
+
+    # generate the different 
+    classical_vs_reupload = dict_list(merge(classical_data_configs, reuploading_params))
+    quantum_vs_reupload = dict_list(merge(quantum_data_configs, reuploading_params))
+
+    classical_vs_rbf = dict_list(merge(classical_data_configs, @dict(kernel_type=:rbf)))
+    quantum_vs_rbf = dict_list(merge(quantum_data_configs, @dict(kernel_type=:rbf)))
+    
+    classical_vs_pauli = dict_list(merge(classical_data_configs, @dict(kernel_type=:pauli)))
+    quantum_vs_pauli = dict_list(merge(quantum_data_configs, @dict(kernel_type=:pauli)))
+
+    # Combine the configurations into a single DataFrame
+    experiment_list = vcat(
+        classical_vs_reupload,
+        quantum_vs_reupload,
+        classical_vs_rbf,
+        quantum_vs_rbf,
+        classical_vs_pauli,
+        quantum_vs_pauli
+    )
+
+    return experiment_list
 end
 
 """
-Generate all valid ExperimentConfig combinations from grid.
-Returns a DataFrame of configurations.
+Generate all valid ExperimentConfig combinations from the grid.
+This version uses DrWatson.dict_list for a more concise and readable implementation.
 """
 function generate_experiment_grid()
-    grid = define_parameter_grid()
-    
-    configs = DataFrame[]
-    
-    # Generate combinations
-    for dataset_type in grid[:dataset_type]
-        for n_samples in grid[:n_samples]
-            for n_features in grid[:n_features]
-                for kernel_types in grid[:kernel_types]
-                    for lc_sizes in grid[:learning_curve_sizes]
-                        for seed in grid[:seed]
-                            
-                            # Dataset-specific parameters
-                            if dataset_type == "rbf"
-                                for gamma in grid[:rbf_gamma]
-                                    for n_sv in grid[:n_support_vectors]
-                                        config = create_config_from_params(
-                                            dataset_type, n_samples, n_features,
-                                            kernel_types, lc_sizes, seed,
-                                            rbf_gamma=gamma, n_support_vectors=n_sv
-                                        )
-                                        push!(configs, config_to_dataframe_row(config))
-                                    end
-                                end
-                            else  # quantum
-                                for paulis in grid[:quantum_paulis]
-                                    for reps in grid[:quantum_reps]
-                                        config = create_config_from_params(
-                                            dataset_type, n_samples, n_features,
-                                            kernel_types, lc_sizes, seed,
-                                            quantum_paulis=paulis, quantum_reps=reps
-                                        )
-                                        push!(configs, config_to_dataframe_row(config))
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
+    exp_config_list = define_parameter_grid()
+
+    configs_df = DataFrame()
+
+    for params in exp_config_list
+
+        # Create the full ExperimentConfig object for each parameter combination
+        config = create_config_from_params(params)
+        # Convert the config to a DataFrame row and append it
+        append!(configs_df, config_to_dataframe_row(config), cols= :union)
     end
-    
-    return vcat(configs...)
+
+    return configs_df
 end
 
 """
 Create ExperimentConfig from parameter values
 """
-function create_config_from_params(
-    dataset_type, n_samples, n_features, kernel_types, lc_sizes, seed;
-    rbf_gamma=nothing, n_support_vectors=nothing,
-    quantum_paulis=nothing, quantum_reps=nothing
-)
+function create_config_from_params(params::Dict{Symbol, Any})
+    seed = params[:seed]
+    lc_sizes = params[:learning_curve_sizes]
+    kernel_type = params[:kernel_type]
+    n_features = params[:n_features]
+
+
     # Build data config
-    if dataset_type == "rbf"
-        data_params = Dict(:gamma => rbf_gamma, :n_support_vectors => n_support_vectors)
-        data_name = "rbf_g$(rbf_gamma)_sv$(n_support_vectors)"
+    if params[:dataset_type] == "rbf"
+        data_params = Dict(
+                           :gamma => params[:rbf_gamma],
+                           :n_support_vectors => params[:n_support_vectors]
+                       )
+        data_name = savename(data_params)
     else
-        data_params = Dict(:n_qubits => n_features, :paulis => quantum_paulis, :reps => quantum_reps)
-        paulis_str = join(quantum_paulis, "-")
-        data_name = "quantum_p$(paulis_str)_r$(quantum_reps)"
+        data_params = Dict(
+                           :n_qubits => n_features,
+                           :paulis => params[:quantum_paulis],
+                           :reps => params[:quantum_reps],
+                           :entanglement => params[:quantum_entanglement]
+                       )
+        params[:pauli_gates] = join(params[:quantum_paulis], '-')
+        data_name = savename(data_params)
     end
     
     data_config = DataConfig(
-        dataset_type = dataset_type,
+        dataset_type = params[:dataset_type],
         dataset_name = data_name,
-        n_samples = n_samples,
+        n_samples = params[:n_samples],
         n_features = n_features,
         data_params = data_params,
         seed = seed
     )
     
     # Build kernel configs
-    kernel_configs = KernelConfig[]
-    for kt in kernel_types
-        if kt == :rbf
-            push!(kernel_configs, RBFKernelConfig(gamma="auto"))
-        elseif kt == :reuploading
-            push!(kernel_configs, ReuploadingKernelConfig(
-                n_qubits = n_features,
-                n_layers = 2,
-                entanglement = "linear",
-                max_iterations = 50,
-                seed = seed
-            ))
-        elseif kt == :pauli
-            push!(kernel_configs, PauliKernelConfig(
-                n_qubits = n_features,
-                reps = 2,
-                n_search_iterations = 20,
-                seed = seed
-            ))
-        end
+    kernel_config = if kernel_type == :rbf
+        RBFKernelConfig(gamma="auto")
+    elseif kernel_type == :reuploading
+        ReuploadingKernelConfig(
+            n_qubits = params[:reuploading_n_qubits],
+            n_features = n_features,
+            n_layers = params[:reuploading_n_layers],
+            optimizer= params[:reuploading_optimizer],
+            seed = seed
+        )
+    elseif kernel_type == :pauli
+        PauliKernelConfig(n_qubits = n_features, seed = seed)
     end
     
-    # Create experiment name
-    kernel_str = join(string.(kernel_types), "-")
-    lc_str = "lc$(length(lc_sizes))"
-    exp_name = savename(
-        @dict(dataset_type, data_name, n_samples, n_features, kernel_str, lc_str, seed),
-        connector="_"
-    )
+    #  Create experiment name
+    ignored_keys = ["n_samples", "n_features", "learning_curve_sizes"] 
+    exp_name = savename(params, ignores=ignored_keys, connector="__")
     
     return ExperimentConfig(
         experiment_name = exp_name,
         description = "Auto-generated from grid",
         data_config = data_config,
-        kernel_configs = kernel_configs,
+        kernel_config = kernel_config,
         learning_curve_sizes = lc_sizes,
         seed = seed
     )
@@ -171,29 +206,9 @@ end
 Convert ExperimentConfig to DataFrame row for easy filtering
 """
 function config_to_dataframe_row(config::ExperimentConfig)
-    dc = config.data_config
-    
-    row = Dict(
-        :experiment_name => config.experiment_name,
-        :dataset_type => dc.dataset_type,
-        :n_samples => dc.n_samples,
-        :n_features => dc.n_features,
-        :n_kernels => length(config.kernel_configs),
-        :kernel_types => join([kc.kernel_type for kc in config.kernel_configs], ","),
-        :n_lc_points => length(config.learning_curve_sizes),
-        :seed => config.seed
-    )
-    
-    # Add dataset-specific params
-    if dc.dataset_type == "rbf"
-        row[:rbf_gamma] = dc.data_params[:gamma]
-        row[:n_support_vectors] = dc.data_params[:n_support_vectors]
-    else
-        row[:quantum_paulis] = join(dc.data_params[:paulis], "-")
-        row[:quantum_reps] = dc.data_params[:reps]
-    end
-    
-    return DataFrame([row])
+    flat_exp = flatten_struct(config)
+    flat_exp["json"] = JSON3.write(config)
+    return DataFrame([flat_exp])
 end
 
 # ============================================================================
@@ -239,8 +254,7 @@ Reconstruct full ExperimentConfig from DataFrame row (simplified version)
 In practice, you'd need more logic here based on what you stored
 """
 function reconstruct_config_from_row(row)
-    # This is a simplified version - you'd need full parameter reconstruction
-    # For now, we rely on loading from individual saved configs
+    return JSON3.read(row[:json], ExperimentConfig)
     error("Use load_config(experiment_name) instead")
 end
 
@@ -499,4 +513,33 @@ end
 
 if abspath(PROGRAM_FILE) == @__FILE__
     main()
+end
+
+
+"""
+Quick test of an experiment config to run the entire process
+"""
+function quick_test()
+    n_samples=1000
+    exp = ExperimentConfig(
+        experiment_name = "QUICK_TEST",
+        description= "testing the pipeline",
+        data_config=DataConfig(
+            dataset_type="rbf",
+            dataset_name="QUICK_TEST_rbf",
+            n_samples=n_samples,
+            data_params = Dict(
+               :dataset_type => "quantum_pauli",
+               :quantum_paulis =>["XYZ"],
+               :quantum_entanglement => "linear",
+               :quantum_reps => 1
+            ),
+        ),       
+        kernel_config=PauliKernelConfig(),
+        learning_curve_sizes=collect(100:100:n_samples),
+    )
+
+    # produce or load data
+
+    return exp
 end
