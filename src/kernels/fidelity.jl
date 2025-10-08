@@ -105,7 +105,7 @@ end
 Compute the kernel matrix K(X,X) for training data.
 If no workspace is provided, creates a DynamicWorkspace automatically.
 """
-function evaluate(kernel::FidelityKernel, X::Matrix; workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map)))
+function evaluate(kernel::FidelityKernel, X::AbstractMatrix; workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map)))
     n_samples = size(X, 1)
     K = zeros(n_samples, n_samples)
     evaluate!(K, kernel, X, workspace)
@@ -118,7 +118,7 @@ end
 Compute the kernel matrix K(X,Y) between two datasets.
 If no workspace is provided, creates a DynamicWorkspace automatically.
 """
-function evaluate(kernel::FidelityKernel, X::Matrix, Y::Matrix; workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map)))
+function evaluate(kernel::FidelityKernel, X::AbstractMatrix, Y::AbstractMatrix; workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map)))
     n_x = size(X, 1)
     n_y = size(Y, 1)
     K = zeros(n_x, n_y)
@@ -145,7 +145,7 @@ end
 
 Compute the symmetric kernel matrix K(X,X) with hybrid tiled evaluation.
 """
-function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, workspace::AbstractFidelityWorkspace)
+function evaluate!(K::Matrix, kernel::FidelityKernel, X::AbstractMatrix, workspace::AbstractFidelityWorkspace)
     n_samples = size(X, 1)
     @argcheck size(K) == (n_samples, n_samples) "K must be $n_samples × $n_samples"
     
@@ -199,7 +199,7 @@ end
 
 Compute the asymmetric kernel matrix K(X,Y) with hybrid tiled evaluation.
 """
-function evaluate!(K::Matrix, kernel::FidelityKernel, X::Matrix, Y::Matrix, workspace::AbstractFidelityWorkspace)
+function evaluate!(K::Matrix, kernel::FidelityKernel, X::AbstractMatrix, Y::AbstractMatrix, workspace::AbstractFidelityWorkspace)
     n_x = size(X, 1)
     n_y = size(Y, 1)
     @assert size(K) == (n_x, n_y) "K must be $n_x × $n_y"
@@ -324,10 +324,12 @@ function loss_gradient(
     K::AbstractMatrix,
     loss_fn::Function, 
     X::AbstractMatrix,
-    workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map))
+    workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map));
+    # loss_kwargs::Dict{Symbol, Any},
 )
     n_samples = size(X, 1)
     
+    # loss, grad = Zygote.withgradient(loss_fn, K, loss_kwargs...)
     loss, grad = Zygote.withgradient(loss_fn, K)
     
     # Backward pass - choose path based on workspace capacity

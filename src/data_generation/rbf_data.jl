@@ -18,8 +18,8 @@ A vector of kernel values `K(x, y_i)` for each row `y_i` in `Y`.
 """
 function rbf_kernel(x::AbstractVector, Y::AbstractMatrix, gamma::Float64)
     # Calculate squared Euclidean distances between x and each row of Y
-    diffs = Y .- x'
-    sq_distances = sum(abs2, diffs, dims=2)
+    diffs = Y .- x
+    sq_distances = sum(abs2, diffs, dims=1)
     
     return exp.(-gamma .* sq_distances)
 end
@@ -55,44 +55,51 @@ A `NamedTuple` containing:
 - `labels_sv`: The labels for the support vectors.
 - `bias`: The bias term.
 """
-function generate_pseudo_svm_dataset(;
-    n_samples::Int=10000, 
-    n_support_vectors::Int=20,
-    feature_range::Tuple{Float64, Float64}=(0.0, 2π), 
-    gamma::Float64=1.0,
-    alpha_range::Tuple{Float64, Float64}=(0.1, 2.0), 
-    bias_range::Tuple{Float64, Float64}=(-1.0, 1.0),
-    seed::Int=42
-)
+function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
+    # extract DataConfig
+    n_samples = data_config.n_samples
+    n_support_vectors = data_config.data_params.n_support_vectors
+    feature_range = data_config.data_params.feature_range 
+    gamma = data_config.data_params.gamma
+    alpha_range = data_config.data_params.alpha_range 
+    bias_range = data_config.data_params.bias_range 
+    seed = data_config.seed
+
     Random.seed!(seed)
     
     # Helper to scale uniform random numbers to a given range
     rand_in_range(range_tuple, dims...) = range_tuple[1] .+ rand(dims...) .* (range_tuple[2] - range_tuple[1])
 
-    # Step 1: Generate pseudo support vectors
-    support_vectors = rand_in_range(feature_range, n_support_vectors, 2)
-    
-    # Step 2: Assign random labels to support vectors
-    labels_sv = rand([-1, 1], n_support_vectors)
-    
-    # Step 3: Generate pseudo Lagrange multipliers
+
+    # 1. Generate points first
+    X = rand(2, n_samples)
+
+    # 2. Design boundary to split them ~50/50
+    support_vectors = rand(2, n_support_vectors)
+    n_pos = n_support_vectors ÷ 2
+    labels_sv = vcat(ones(Int, n_pos), -ones(Int, n_support_vectors - n_pos))[randperm(n_support_vectors)]
     alphas = rand_in_range(alpha_range, n_support_vectors)
-    
-    # Step 4: Generate bias
-    bias = rand_in_range(bias_range)
-    
-    # Step 5: Generate dataset points
-    X = rand_in_range(feature_range, n_samples, 2)
-    
+
+    # 3. Compute kernel contributions for all points
+    kernel_matrix = vcat([rbf_kernel(x, support_vectors, gamma) for x in eachcol(X)]...)
+    scores = kernel_matrix * (alphas .* labels_sv)
+
+    # 4. Set bias to achieve target class balance
+    target_fraction = 0.5
+    bias = -quantile(scores, target_fraction)  # Choose bias so ~50% are positive    
+
     # Step 6: Classify using the decision function
     function decision_function(x_point::AbstractVector)
         # f(x) = Σᵢ αᵢ yᵢ K(x, sᵢ) + b
+        # kernel_values is n_features x n_support_vectors matrix
         kernel_values = rbf_kernel(x_point, support_vectors, gamma)
-        return sum(alphas .* labels_sv .* kernel_values) + bias
+        # alphas and labels_sv are both column vectors of length n_support_vector
+        # to do element wise multiplication we need to get dimensions right
+        return sum((alphas .* labels_sv)' .* kernel_values) + bias
     end
     
     # Classify all points using a comprehension over the rows of X
-    y_float = [sign(decision_function(x_row)) for x_row in eachrow(X)]
+    y_float = [sign(decision_function(x_col)) for x_col in eachcol(X)]
     
     # Handle boundary points (where f(x) = 0) by assigning a random label
     boundary_mask = y_float .== 0
@@ -102,11 +109,16 @@ function generate_pseudo_svm_dataset(;
     end
     
     # Convert labels to integers
-    y = Int.(y_float)
-    
+
+    # NOW scale to desired feature range if needed
+    scale = feature_range[2] - feature_range[1]
+    offset = feature_range[1]
+    X_scaled = X .* scale .+ offset
+    support_vectors_scaled = support_vectors .* scale .+ offset
+
     return Dict(
-        :X=>X, 
-        :y=>y, 
+        :X=>X_scaled, 
+        :y=>y_float, 
         :support_vectors=>support_vectors, 
         :alphas=>alphas, 
         :labels_sv=>labels_sv, 

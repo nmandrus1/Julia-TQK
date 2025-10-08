@@ -49,29 +49,36 @@ function random_unitary(dim::Int; seed::Union{Int,Nothing}=nothing)
 end
 
 # Alternative: Grid-based sampling for better coverage
-function generate_pauli_expectation_data_grid(
-    config::PauliFeatureMapConfig,
-    n_samples::Int;
-    gap::Float64 = 0.3,
-    observable::Union{String,Nothing} = nothing,
-    grid_points_per_dim::Int = 20,
-    seed::Int = 42
-)
+function generate_pauli_expectation_data_grid(data_config::DataConfig{QuantumPauliDataParams})
+    # display(data_config)
+    n_samples=data_config.n_samples
+    n_features=data_config.n_features
+    gap=data_config.data_params.gap
+    grid_points_per_dim = data_config.data_params.grid_points_per_dim
+    paulis=data_config.data_params.paulis
+    reps=data_config.data_params.reps
+    entanglement=data_config.data_params.entanglement
+    seed=data_config.seed
+    n_qubits = data_config.data_params.n_qubits
+
     Random.seed!(seed)
     
-    n_qubits = config.n_qubits
     dim = 2^n_qubits
     
-    # Choose observable
-    if isnothing(observable)
-        observable = config.paulis[argmax(length.(config.paulis))]
-    end
+    observable = paulis[argmax(length.(paulis))]
     
     O = pauli_string_to_operator(observable, n_qubits)
     V = random_unitary(dim, seed=seed+1)
     M = V' * O * V
 
-    feature_map = create_pauli_feature_map(config)
+
+    pauli_feature_map = pyimport("qiskit.circuit.library").pauli_feature_map
+    feature_map = pauli_feature_map(
+        feature_dimension=n_features,
+        reps=reps,
+        entanglement=entanglement,
+        paulis=pylist(paulis),
+    )
 
     "Get the statevector that corresponds to feature transform"
     function statevec_from_feature_map(feature_map, datavec::Vector{Float64})
@@ -84,8 +91,8 @@ function generate_pauli_expectation_data_grid(
     grid_1d = range(0, 2π, length=grid_points_per_dim)
     
     # For efficiency, only create full grid if n_features <= 3
-    if config.n_features <= 3
-        grid_points = Iterators.product([grid_1d for _ in 1:config.n_features]...)
+    if n_features <= 3
+        grid_points = Iterators.product([grid_1d for _ in 1:n_features]...)
         
         valid_points = []
         labels = []
@@ -108,6 +115,8 @@ function generate_pauli_expectation_data_grid(
         pos_indices = findall(labels .== 1)
         neg_indices = findall(labels .== -1)
         
+        # display(length(pos_indices))
+        # display(length(neg_indices))
         if length(pos_indices) < n_per_class || length(neg_indices) < n_per_class
             @error"Insufficient separable points"
         end
@@ -115,11 +124,12 @@ function generate_pauli_expectation_data_grid(
         selected_pos = sample(pos_indices, n_per_class, replace=false)
         selected_neg = sample(neg_indices, n_per_class, replace=false)
         
-        X = vcat([valid_points[i]' for i in selected_pos]...,
-                 [valid_points[i]' for i in selected_neg]...)
+        X = hcat([valid_points[i] for i in selected_pos]...,
+                 [valid_points[i] for i in selected_neg]...)
         y = vcat(ones(n_per_class), -ones(n_per_class))
+        y = Float64.(y)
         
-        return Dict(:X => X, :y => y, :config => config, :gap => gap, :seed=> seed)
+        return Dict(:X => X, :y => y, :config => data_config, :gap => gap, :seed=> seed)
     else
         @error "Data dimension must be <= 3"
     end

@@ -1,81 +1,121 @@
 using DrWatson
 using Random
 using PythonCall
-using Dates
 using OptimizationOptimJL
 
 using StructTypes
+
+# Deterministic configuration of experiments and data generation
+# Instead of regeneration, reload
+# Fully typed
+# NO STRANGE DICTS -- All data are objects with fields
 
 # ============================================================================
 # Base Configuration Types
 # ============================================================================
 
 """
-Abstract type for all kernel configurations.
-Each concrete kernel type must implement:
-- produce_kernel(config::KernelConfig, data_config::DataConfig) -> kernel
+Abstract type for all kernel hyperparameter configurations.
 """
-abstract type KernelConfig end
+abstract type KernelHyperparameterSearchConfig end
+
+"""
+Abstract type for all kernel hyperparameter selection.
+"""
+abstract type KernelHyperparameters end
+
+"""
+Abstract type for all data configurations.
+"""
+abstract type DataParams end
 
 # ============================================================================
 # Data Configuration
 # ============================================================================
 
-@kwdef struct DataConfig
-    # Dataset identification
-    dataset_type::String  # "rbf", "quantum_pauli", "quantum_expectation"
-    dataset_name::String = "default"
-    
+@kwdef struct DataConfig{P<:DataParams}
     # Size parameters
-    n_samples::Int = 1000
+    n_samples::Int = 10000
     n_features::Int = 2
     test_size::Float64 = 0.2
     
     # Data generation specific
-    data_params::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    data_params::P
     
     # Reproducibility
     seed::Int = 42
     
     # File path (set after generation)
-    data_path::String = ""
+    # trying to work without this, not sure it's needed
+    # data_path::String = ""
 end
+
+DrWatson.default_prefix(c::DataConfig) = savename(c.data_params)
+
+@kwdef struct RBFDataParams <: DataParams
+    dataset_type::String="rbf"
+    gamma::Float64
+    n_support_vectors::Int
+    alpha_range::Tuple{Float64, Float64} = (0.1, 2.0)
+    bias_range::Tuple{Float64, Float64} = (-1.0, 1.0)
+    feature_range::Tuple{Float64, Float64} = (0.0, 2π)
+end
+
+
+DrWatson.allaccess(c::RBFDataParams) = (:gamma, :n_support_vectors, :alpha_range, :bias_range, :feature_range )
+
+@kwdef struct QuantumPauliDataParams <: DataParams
+    dataset_type::String="pauli"
+    n_qubits::Int
+    paulis::Vector{String}
+    reps::Int
+    entanglement::String = "full"
+    gap::Float64 = 0.3
+    grid_points_per_dim::Int = 20
+end
+
+DrWatson.allaccess(c::QuantumPauliDataParams) = (:n_qubits, :paulis, :reps, :entanglement, :gap, :grid_points_per_dim)
+DrWatson.default_prefix(c::QuantumPauliDataParams) = join(["pauli_data", join(c.paulis, "-")], "_")
 
 # ============================================================================
 # RBF Kernel Configuration
 # ============================================================================
 
-@kwdef struct RBFKernelConfig <: KernelConfig
+@kwdef struct RBFKernelHyperparameterSearchConfig <: KernelHyperparameterSearchConfig
     kernel_type::Symbol= :rbf
-    gamma::Union{Float64, String} = "auto"  # or specific value
     
     # If "auto", will use cross-validation to find best gamma
-    cv_folds::Int = 3
-    gamma_range::Vector{Float64} = [0.001, 0.01, 0.1, 1.0, 10.0]
+    gamma_range::Vector{Float64} = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+end
+
+
+"""
+    Best Hyperparameters found during tuning  
+
+    These will be stored/passed on to SVM training
+"""
+@kwdef struct RBFHyperparameters <: KernelHyperparameters
+    gamma::Float64
+    C::Float64
+
+    # Reproducibility
+    seed::Int = 42
 end
 
 """
 Produce an RBF kernel (just returns the configuration since sklearn handles it)
 """
-function produce_kernel(config::RBFKernelConfig, data_config::DataConfig; n_samples::Union{Int, Nothing}=nothing)
+function produce_kernel(config::RBFKernelHyperparameterSearchConfig)
     # For RBF, we don't actually "train" - just return the gamma
-    if config.gamma == "auto"
-        @info "RBF kernel will use cross-validation to select gamma"
-        return Dict(:type => "rbf", :gamma => nothing, :needs_cv => true, 
-                   :gamma_range => config.gamma_range, :cv_folds => config.cv_folds)
-    else
-        @info "RBF kernel using gamma = $(config.gamma)"
-        return Dict(:type => "rbf", :gamma => config.gamma, :needs_cv => false)
-    end
+    @info "RBF kernel will use cross-validation to select gamma"
+    return Dict(:type => "rbf", :gamma_range => config.gamma_range)
 end
 
 # ============================================================================
 # Reuploading Quantum Kernel Configuration
 # ============================================================================
 
-#Optimizer configuration? 
-
-@kwdef struct ReuploadingKernelConfig <: KernelConfig
+@kwdef struct ReuploadingKernelHyperparameterSearchConfig <: KernelHyperparameterSearchConfig
     kernel_type::Symbol= :reuploading
     
     # Circuit architecture
@@ -87,23 +127,30 @@ end
     # Training configuration
     optimizer::String #"Adam" or "LBFGS"
     max_iterations::Int = 100
-    loss_function::String = "svm_loss"  # or "svm_loss"
     
-    # Optimization parameters
-    learning_rate::Float64 = 0.01
-    convergence_tol::Float64 = 1e-6
+    # Optimization parameter grid search
+    learning_rates::Vector{Float64} = [0.01, 0.05, 0.1, 0.5, 1]
     
     # Memory management
-    memory_budget_gb::Float64 = 4.0
+    memory_budget_gb::Float64 = 8.0
     
     # Reproducibility
     seed::Int
-    end
+end
+
+@kwdef struct ReuploadingKernelHyperparameters <: KernelHyperparameters
+    # final angles found by optimization 
+    thetas::Vector{Float64}
+    biases::Vector{Float64}
+    loss::Vector{Float64}
+    C::Float64
+end
+    
 
 """
 Produce a trained reuploading quantum kernel
 """
-function produce_kernel(config::ReuploadingKernelConfig, data_config::DataConfig; n_samples::Union{Int, Nothing}=nothing)
+function produce_kernel(config::ReuploadingKernelHyperparameterSearchConfig, data_config::DataConfig; n_samples::Union{Int, Nothing}=nothing)
     @info "Training Reuploading Quantum Kernel" config.n_qubits config.n_layers config.entanglement
     
     # Load data
@@ -195,7 +242,7 @@ end
     max_num_terms::Int = 3
 end
 
-@kwdef struct PauliKernelConfig <: KernelConfig
+@kwdef struct PauliKernelHyperparameterSearchConfig <: KernelHyperparameterSearchConfig
     kernel_type::Symbol = :pauli
     
     # Circuit parameters
@@ -207,11 +254,25 @@ end
     search_strategy::String = "random"  
     n_search_iterations::Int = 50
     search_constraints::PauliSearchConstraints = PauliSearchConstraints()
-       
-    # Cross-validation for search
-    cv_folds::Int = 3
-    cv_samples::Int = 100  # Use subset of training data for CV
-    
+          
+    # Reproducibility
+    seed::Int = 42
+end
+
+"""
+    Best Hyperparameters found during tuning  
+
+    These will be stored/passed on to SVM training
+"""
+@kwdef struct PauliKernelHyperparameters <: KernelHyperparameters
+
+    # Circuit parameters
+    n_qubits::Int = 2
+    reps::Int = [1, 2, 3]
+    entanglement::String
+    paulis::Vector{String}
+    C::Float64
+             
     # Reproducibility
     seed::Int = 42
 end
@@ -257,50 +318,10 @@ function generate_constrained_pauli_set(
 end
 
 """
-Evaluate a single Pauli kernel configuration using cross-validation
-"""
-function evaluate_pauli_kernel(
-    paulis::Vector{String},
-    n_qubits::Int,
-    reps::Int,
-    entanglement::String,
-    X_cv::Matrix{Float64},
-    y_cv::Vector{Float64},
-    cv_folds::Int
-)
-    # Use PythonCall to create Qiskit feature map
-    qiskit_lib = pyimport("qiskit.circuit.library")
-    qiskit_kernels = pyimport("qiskit_machine_learning.kernels")
-    
-    feature_map = qiskit_lib.PauliFeatureMap(
-        feature_dimension=size(X_cv, 2),
-        reps=reps,
-        entanglement=entanglement,
-        paulis=pylist(paulis)
-    )
-    
-    quantum_kernel = qiskit_kernels.FidelityStatevectorKernel(
-        feature_map=feature_map
-    )
-    
-    # Compute kernel matrix
-    K = pyconvert(Matrix{Float64}, quantum_kernel.evaluate(x_vec=X_cv))
-    
-    # Simple KTA score as evaluation metric
-    y_outer = y_cv * y_cv'
-    K_centered = K .- mean(K)
-    y_centered = y_outer .- mean(y_outer)
-    
-    kta = sum(K_centered .* y_centered) / (sqrt(sum(K_centered.^2)) * sqrt(sum(y_centered.^2)))
-    
-    return kta
-end
-
-"""
 Search for the best Pauli kernel configuration
 """
 function search_best_pauli_kernel(
-    config::PauliKernelConfig,
+    config::PauliKernelHyperparameterSearchConfig,
     X_train::Matrix{Float64},
     y_train::Vector{Float64}
 )
@@ -359,7 +380,7 @@ end
 """
 Produce a Pauli feature map kernel (with optional search)
 """
-function produce_kernel(config::PauliKernelConfig, data_config::DataConfig; n_samples::Union{Int, Nothing}=nothing)
+function produce_kernel(config::PauliKernelHyperparameterSearchConfig, data_config::DataConfig; n_samples::Union{Int, Nothing}=nothing)
     @info "Producing Pauli Quantum Kernel" config.n_qubits config.reps
     
     # Load data
@@ -414,23 +435,27 @@ end
 # Master Experiment Configuration
 # ============================================================================
 
-@kwdef struct ExperimentConfig
-    experiment_name::String
-    description::String = ""
+@kwdef struct ExperimentConfig{P<:DataParams, K<:KernelHyperparameterSearchConfig}
+    experiment_name::String = nothing
     
     # Data configuration
-    data_config::DataConfig
+    data_config::DataConfig{P}
     
     # Model configuration (this model learns the data) 
-    kernel_config::KernelConfig
+    kernel_config::K
     
     # Learning curve configuration
-    learning_curve_sizes::Vector{Int} = Int[]  # Empty means no learning curves
+    learning_curve_sizes::Vector{Int} = collect(100:100:data_config.n_samples)
+
+    # ranges for the value of C in SVM computation
+    c_ranges::Vector{Float64} = [0.1, 1.0, 10.0, 100.0]
+    cv_folds::Int = 5
     
     # Experiment tracking
     seed::Int = 42
-    created_at::String = string(now())
 end
+
+DrWatson.default_prefix(c::ExperimentConfig) = join(savename(c.data_config), savename(c.kernel_config), "_")
 
 """
 Convert experiment config to DrWatson-compatible dict
@@ -483,17 +508,17 @@ function ExperimentConfig(d::Dict{Symbol, Any})
     # --- Reconstruct KernelConfig Array ---
     kernel_type = Symbol(d[:kernel_type])
     
-    kernel_configs = KernelConfig[]
+    kernel_configs = KernelHyperparameterSearchConfig[]
 
     kernel_type = if kernel_type == :rbf
-        RBFKernelConfig(gamma="auto")
+        RBFKernelHyperparameterSearchConfig(gamma="auto")
     elseif kernel_type == :reuploading
-        ReuploadingKernelConfig(
+        ReuploadingKernelHyperparameterSearchConfig(
             n_qubits = n_features, n_layers = 2, entanglement = "linear",
             max_iterations = 50, seed = seed
         )
     elseif kernel_type == :pauli
-        PauliKernelConfig(
+        PauliKernelHyperparameterSearchConfig(
             n_qubits = n_features, reps = 2, n_search_iterations = 20, seed = seed
         )
     end
@@ -511,60 +536,6 @@ end
 # ============================================================================
 # Pipeline Functions
 # ============================================================================
-
-"""
-Step 1: Generate or load data according to data_config
-"""
-function prepare_data!(config::ExperimentConfig)
-    dc = config.data_config
-    
-    # Create unique filename using DrWatson
-    data_params = @dict(
-        dataset_type = dc.dataset_type,
-        n_samples = dc.n_samples,
-        n_features = dc.n_features,
-        seed = dc.seed
-    )
-    
-    filename = savename(data_params, "jld2")
-    filepath = datadir("sims", dc.dataset_type, filename)
-    
-    # Check if data already exists
-    if isfile(filepath)
-        @info "Data already exists, loading..." filepath
-        config.data_config.data_path = filepath
-        return filepath
-    end
-    
-    @info "Generating new data..." dc.dataset_type
-    
-    # Generate based on dataset type
-    if dc.dataset_type == "rbf"
-        # Call your RBF data generation function
-        data_dict = generate_pseudo_svm_dataset(
-            n_samples=dc.n_samples,
-            n_features=dc.n_features,
-            seed=dc.seed,
-            dc.data_params...
-        )
-    elseif dc.dataset_type == "quantum_pauli"
-        # Call your Pauli data generation function
-        data_dict = generate_pauli_expectation_data_grid(
-            # your parameters here
-            seed=dc.seed,
-            dc.data_params...
-        )
-    else
-        error("Unknown dataset type: $(dc.dataset_type)")
-    end
-    
-    # Save data
-    wsave(filepath, data_dict)
-    config.data_config.data_path = filepath
-    
-    @info "Data saved" filepath
-    return filepath
-end
 
 """
 Step 2: Produce all kernels with optional learning curves
@@ -629,8 +600,8 @@ For RBF: Cross-validate gamma on full training data
 For Reuploading: Already optimizes on full data, return same config
 For Pauli: Run search on full data, return best config
 """
-function select_hyperparameters(config::KernelConfig, data_config::DataConfig)
-    if config isa RBFKernelConfig
+function select_hyperparameters(config::KernelHyperparameterSearchConfig, data_config::DataConfig)
+    if config isa RBFKernelHyperparameterSearchConfig
         if config.gamma == "auto"
             @info "Cross-validating RBF gamma on full training data"
             # Run CV to select best gamma, return updated config
@@ -655,17 +626,17 @@ function select_hyperparameters(config::KernelConfig, data_config::DataConfig)
             end
             
             @info "Selected gamma" best_gamma best_score
-            return RBFKernelConfig(gamma=best_gamma)
+            return RBFKernelHyperparameterSearchConfig(gamma=best_gamma)
         else
             return config  # Gamma already specified
         end
         
-    elseif config isa ReuploadingKernelConfig
+    elseif config isa ReuploadingKernelHyperparameterSearchConfig
         # Reuploading already trains on full data in produce_kernel
         # Just return the config as-is
         return config
         
-    elseif config isa PauliKernelConfig
+    elseif config isa PauliKernelHyperparameterSearchConfig
         if isnothing(config.fixed_paulis)
             @info "Searching for best Pauli strings on full training data"
             data = load(data_config.data_path)
@@ -675,7 +646,7 @@ function select_hyperparameters(config::KernelConfig, data_config::DataConfig)
             best_paulis, best_score, _ = search_best_pauli_kernel(config, X_train, y_train)
             
             @info "Selected Pauli strings" best_paulis best_score
-            return PauliKernelConfig(
+            return PauliKernelHyperparameterSearchConfig(
                 n_qubits = config.n_qubits,
                 reps = config.reps,
                 entanglement = config.entanglement,
@@ -729,10 +700,10 @@ end
 
 # Define how to handle the abstract type
 StructTypes.StructType(::Type{ExperimentConfig}) = StructTypes.Struct()
-StructTypes.StructType(::Type{KernelConfig}) = StructTypes.AbstractType()
-StructTypes.subtypekey(::Type{KernelConfig}) = :kernel_type
-StructTypes.subtypes(::Type{KernelConfig}) = (
-    rbf = RBFKernelConfig,
-    reuploading = ReuploadingKernelConfig,
-    pauli = PauliKernelConfig
+StructTypes.StructType(::Type{KernelHyperparameterSearchConfig}) = StructTypes.AbstractType()
+StructTypes.subtypekey(::Type{KernelHyperparameterSearchConfig}) = :kernel_type
+StructTypes.subtypes(::Type{KernelHyperparameterSearchConfig}) = (
+    rbf = RBFKernelHyperparameterSearchConfig,
+    reuploading = ReuploadingKernelHyperparameterSearchConfig,
+    pauli = PauliKernelHyperparameterSearchConfig
 )

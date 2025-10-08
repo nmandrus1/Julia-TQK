@@ -521,18 +521,20 @@ Quick test of an experiment config to run the entire process
 """
 function quick_test()
     n_samples=1000
+    n_features=2
     exp = ExperimentConfig(
         experiment_name = "QUICK_TEST",
         description= "testing the pipeline",
-        data_config=DataConfig(
-            dataset_type="rbf",
-            dataset_name="QUICK_TEST_rbf",
+        data_config=DataConfig{QuantumPauliDataParams}(
             n_samples=n_samples,
-            data_params = Dict(
-               :dataset_type => "quantum_pauli",
-               :quantum_paulis =>["XYZ"],
-               :quantum_entanglement => "linear",
-               :quantum_reps => 1
+            n_features=n_features,
+            data_params = QuantumPauliDataParams(
+               n_qubits = n_features,
+               paulis = ["Y", "ZX"],
+               entanglement = "linear",
+               reps=1,
+               gap = 0.3,
+               grid_points_per_dim = 150,
             ),
         ),       
         kernel_config=PauliKernelConfig(),
@@ -540,6 +542,10 @@ function quick_test()
     )
 
     # produce or load data
+    # dictionary of x_train, y_train, x_test, and y_test
+    prepare_data!(exp)
+
+    # we have data, lets produce the kernels.
 
     return exp
 end

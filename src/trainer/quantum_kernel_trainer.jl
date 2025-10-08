@@ -11,12 +11,13 @@ Maintains memory efficiency through workspace reuse.
 mutable struct QuantumKernelTrainer
     kernel::FidelityKernel
     loss_fn::Function
-    X::Matrix{Float64}
-    y::Vector{Float64}
+    X::AbstractMatrix{Float64}
+    y::AbstractVector{Float64}
     workspace::AbstractFidelityWorkspace
     # Cache for kernel matrix to avoid recomputation
     K_cache::Matrix{Float64}
     grad_cache::AbstractVector{Float64}
+    # loss_kwargs::Dict{Symbol, Any}
 end
 
 """
@@ -35,9 +36,10 @@ Create a trainer for quantum kernel optimization.
 function QuantumKernelTrainer(
     kernel::FidelityKernel, 
     loss_fn::Function,
-    X::Matrix{Float64}, 
-    y::Vector{Float64};
-    memory_budget_gb::Float64 = 4.0
+    X::AbstractMatrix{Float64}, 
+    y::AbstractVector{Float64};
+    memory_budget_gb::Float64 = 4.0,
+    kwargs...
 )
     # Create workspace if not provided
     workspace = create_preallocated_workspace(
@@ -47,6 +49,9 @@ function QuantumKernelTrainer(
     )
     grad_cache = zeros(n_params(kernel.feature_map) * 2)
     
+    # loss_kw_args_dict = Dict{Symbol, Any}(pairs(kwargs))
+
+    # return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)), grad_cache, loss_kw_args_dict)
     return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)), grad_cache)
 end
 
@@ -77,6 +82,7 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
 
         # store gradient of parameters in workspace
         #loss, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
+        # loss = trainer.loss_fn(trainer.K_cache; trainer.loss_kwargs)
         loss = trainer.loss_fn(trainer.K_cache)
         
         return loss
@@ -97,12 +103,16 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
         evaluate!(trainer.K_cache, trainer.kernel, trainer.X, trainer.workspace)
 
         # store gradient of parameters in workspace
+        # _, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace, loss_kwargs=trainer.loss_kwargs)
         _, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
         
         # Pack gradients
         _, _, grad_params = get_grad_buffers!(trainer.workspace)
         grad[1:nparams] .= grad_params[1:nparams]
         grad[nparams+1:end] .= grad_params[nparams+1:end]
+
+        # println("Weight gradient norms ", norm(grad_params[1:nparams]))
+        # println("Bias gradiet norms ", norm(grad_params[nparams+1:end]))
         
         return nothing
     end
@@ -175,6 +185,7 @@ function train!(trainer::QuantumKernelTrainer;
     optf = OptimizationFunction(obj!, grad=grad!)
     
     # Create OptimizationProblem
+    # prob = OptimizationProblem(optf, initial_params, lb=ones(length(initial_params)) * -π, ub=ones(length(initial_params)) * π)
     prob = OptimizationProblem(optf, initial_params)
     
     # Default optimizer if not provided

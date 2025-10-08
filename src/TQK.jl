@@ -23,14 +23,15 @@ include("workspaces/preallocated.jl")
 
 include("trainer/quantum_kernel_trainer.jl")
 
+# experiment configuration (many types declared here)
+include("experiment_configuration.jl")
+
 include("qiskit/qiskit_interface.jl")
 
 # data generation
 include("data_generation/quantum_data.jl")
 include("data_generation/rbf_data.jl")
-
-# experiment configuration
-include("experiment_configuration.jl")
+include("data_generation/load_data.jl")
 
 
 # Export types
@@ -43,7 +44,13 @@ export QuantumKernelTrainer
 export PauliFeatureMapConfig
 
 # Config
-export ExperimentConfig, DataConfig, KernelConfig, RBFKernelConfig, ReuploadingKernelConfig, PauliKernelConfig
+export ExperimentConfig, DataConfig, KernelHyperparameterSearchConfig
+export RBFKernelHyperparameterSearchConfig, ReuploadingKernelHyperparameterSearchConfig
+export PauliKernelHyperparameterSearchConfig, DataParams, QuantumPauliDataParams, RBFDataParams
+
+# Results
+export ReuploadingKernelHyperparameters, PauliKernelHyperparameters, KernelHyperparameters, RBFKernelHyperparameters
+export KernelResults
 
 # Export functions for feature maps
 export n_qubits, n_features, n_params, map_inputs!
@@ -71,7 +78,7 @@ export kernel_alignment_loss
 export create_pauli_feature_map, compute_pauli_kernel_matrix
 
 # data generation
-export generate_pauli_expectation_data_grid, generate_pseudo_svm_dataset
+export generate_pauli_expectation_data_grid, generate_pseudo_svm_dataset, prepare_data!, produce_data
 
 
 end

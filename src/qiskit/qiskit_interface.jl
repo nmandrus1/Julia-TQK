@@ -3,32 +3,11 @@ using LinearAlgebra
 using Parameters
 using PythonCall
 
-"""
-Configuration for PauliFeatureMap from Qiskit.
-
-Pauli strings can be:
-- Single qubit: "I", "X", "Y", "Z"
-- Two qubit: "XX", "YY", "ZZ", "XY", "YZ", "XZ"
-- Three qubit: "XXX", "XYZ", "ZZZ", etc.
-"""
-@with_kw struct PauliFeatureMapConfig
-    # Core parameters
-    n_features::Int              # Input feature dimension
-    n_qubits::Int = n_features   # Default: one qubit per feature
-    reps::Int = 2                 # Number of repetitions
-    
-    # Pauli strings (e.g., ["Z", "YY", "ZXZ"])
-    paulis::Vector{String} = ["Z", "ZZ"]
-    
-    # Entanglement structure
-    entanglement::String = "full"  # "full", "linear", "circular", or "sca"
-   
-end
 
 # --- Your Functions (Refactored) ---
 
 "Create a Qiskit PauliFeatureMap circuit from Julia configuration."
-function create_pauli_feature_map(config::PauliFeatureMapConfig)
+function create_pauli_feature_map(config::PauliKernelHyperparameterSearchConfig)
     # The constructor is called directly like a Julia function.
     # Note: Keyword arguments are passed using Julia's syntax.
     pauli_feature_map = pyimport("qiskit.circuit.library").pauli_feature_map
@@ -43,7 +22,7 @@ function create_pauli_feature_map(config::PauliFeatureMapConfig)
 end
 
 "Compute the quantum kernel matrix for data X using PauliFeatureMap."
-function compute_pauli_kernel_matrix(config::PauliFeatureMapConfig, X::Matrix{Float64})
+function compute_pauli_kernel_matrix(config::PauliKernelHyperparameterSearchConfig, X::Matrix{Float64})
     feature_map = create_pauli_feature_map(config)
     
     # Create the quantum kernel object
@@ -60,7 +39,7 @@ function compute_pauli_kernel_matrix(config::PauliFeatureMapConfig, X::Matrix{Fl
 end
 
 "Get properties of the PauliFeatureMap circuit."
-function get_circuit_properties(config::PauliFeatureMapConfig)
+function get_circuit_properties(config::PauliKernelHyperparameterSearchConfig)
     feature_map = create_pauli_feature_map(config)
     
     # Access attributes and call methods directly using dot notation!
@@ -78,7 +57,7 @@ function get_circuit_properties(config::PauliFeatureMapConfig)
 end
 
 "Generate a visual representation of the circuit."
-function visualize_circuit(config::PauliFeatureMapConfig; filename=nothing)
+function visualize_circuit(config::PauliKernelHyperparameterSearchConfig; filename=nothing)
     feature_map = create_pauli_feature_map(config)
     decomposed_map = feature_map.decompose()
 

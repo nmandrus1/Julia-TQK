@@ -256,7 +256,7 @@ end
 
     Assigns the parameters of the circuit to random values distributed uniformly in the given range.
 """
-function assign_random_params!(fm::ReuploadingCircuit, range::Tuple{<:Real, <:Real} = (-π, π); seed = 11)
+function assign_random_params!(fm::ReuploadingCircuit; range::Tuple{<:Real, <:Real} = (-π, π), seed = 11)
     Random.seed!(seed)
     n_params = nparameters(fm.circuit)
     
