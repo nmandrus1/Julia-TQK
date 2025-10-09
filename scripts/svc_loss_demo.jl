@@ -76,11 +76,21 @@ function centered_kernel_target_alignment(K::Matrix, y::AbstractVector)
     
     # numerator = tr(K_centered * y_centered)
     # denominator = sqrt(tr(K_centered^2) * tr(y_centered^2)) + 1e-8
-    numerator = -1 * tr(K_centered' * y_centered)
+    numerator = tr(K_centered' * y_centered)
     denominator = norm(K_centered) * norm(y_centered) + 1e-8
     # println(numerator, "/", denominator)
     
     return numerator / denominator
+end
+
+
+function kernel_alignment_squared_error(K::Matrix, y::AbstractVector)
+    n = length(y)
+    y_outer = y * y'
+
+    loss = mean((K .- y_outer).^2)
+    
+    return loss
 end
 
 """
@@ -119,26 +129,29 @@ function smooth_svm_loss_tanh(K::Matrix, y::AbstractVector; C=1.0, β=5.0, λ=0.
 end
 
 
-"""
-Smooth SVM loss using decision function approximation and squared hinge loss .
-"""
-function smooth_svm_loss(K::Matrix, y::AbstractVector, lambda=0.1)
-    Y = y * y' # Ideal kernel matrix Y_ij = y_i * y_j
 
-    # We want K_ij to be close to Y_ij.
-    # The margin for each pair (i,j) is Y_ij * K_ij.
-    margins = Y .* K
-    # println(norm(margins))
-
-    # Apply the smooth squared hinge loss
-    # Penalize any pair where the margin is less than 1.
-    loss = sum(max.(0, 1 .- margins).^2)
-    regularization = 0.5 * lambda * norm(K)
-
-    # return loss / (length(y)^2) # Normalize    
-    # return (loss + regularization)/length(y)
-    return loss + regularization
+function smooth_hinge_loss(K::Matrix, y::AbstractVector; C=1.0, λ=0.01)
+    # Approximate decision function from kernel
+    # For kernel methods: f(x) = Σⱼ αⱼyⱼK(xⱼ,x)
+    # Simplified version: use kernel-based scores
+    # K_normalized = K ./ (norm(K) + 1e-8)  # Normalize to prevent explosion
+    Y = y* y'
+    margins = Y .* K   
+    
+    # Smooth hinge loss using squared max
+    smooth_hinge = mean(max.(0, 1 .- margins).^2)
+    
+    # Regularization (approximate ||w||² from kernel)
+    # regularization = 1/2 * λ * norm(K)
+    
+    # total_loss = regularization + (C / n) * smooth_hinge
+    # println("Smooth Hinge Loss: ", smooth_hinge)
+    # total_loss = C * smooth_hinge + regularization
+    total_loss = C * smooth_hinge 
+    
+    return total_loss
 end
+
 
 # Main experiment
 function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
@@ -146,31 +159,31 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
    
     # Create dataset
     # data = load_iris_binary()
-    data = produce_data(
-               DataConfig(
-                    n_samples=500,
-                    data_params=RBFDataParams(
-                        gamma=100.0,
-                        n_support_vectors=250,
-                    ),
-                    seed=seed
-                )
-            )
-
     # data = produce_data(
     #            DataConfig(
-    #                 n_samples=1000,
-    #                 data_params=QuantumPauliDataParams(
-    #                     n_qubits=2,
-    #                     paulis=["XZ", "YZ", "YX"],
-    #                     entanglement="linear",
-    #                     reps=2,
-    #                     gap=0.1,
-    #                     grid_points_per_dim=100,
+    #                 n_samples=500,
+    #                 data_params=RBFDataParams(
+    #                     gamma=100.0,
+    #                     n_support_vectors=250,
     #                 ),
     #                 seed=seed
     #             )
     #         )
+
+    data = produce_data(
+               DataConfig(
+                    n_samples=1000,
+                    data_params=QuantumPauliDataParams(
+                        n_qubits=2,
+                        paulis=["XZ", "YZ", "YX"],
+                        entanglement="linear",
+                        reps=2,
+                        gap=0.1,
+                        grid_points_per_dim=100,
+                    ),
+                    seed=seed
+                )
+            )
 
     X_train = permutedims(data[:X_train])
     X_test = permutedims(data[:X_test])
@@ -205,10 +218,10 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     println("  Seed: $seed")
 
 
-    loss_fn = K -> centered_kernel_target_alignment(K, y_train)
+    # loss_fn = K -> -centered_kernel_target_alignment(K, y_train)
     # loss_fn = K -> kernel_target_alignment(K, y_train)
-    # loss_fn = K -> -smooth_svm_loss_tanh(K, y_train; C=1.0, λ=0.00000001, β=100)
-    # loss_fn = K -> smooth_svm_loss(K, y_train)
+    # loss_fn = K -> smooth_svm_loss_tanh(K, y_train; C=1.0, λ=0.01, β=5.0)
+    loss_fn = K -> smooth_hinge_loss(K, y_train; C = 1.0, λ=0.1)
     trainer = QuantumKernelTrainer(
         kernel,
         loss_fn,
@@ -216,14 +229,11 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
         y_train,
     )
 
-    println("Checking gradient...")
-
     weights, biases = get_params(trainer.kernel.feature_map)
     initial_params = vcat(weights, biases)
-    check_gradient(trainer, initial_params)
+    verify_gradients(trainer, initial_params)
 
     # Train
-    # losses = Vector{Float64}(undef, ITERS+1)
 
     # Track metrics during training
     metrics = Dict(
@@ -478,25 +488,38 @@ function controlled_experiment(; n_trials=5)
     return results
 end
 
-# In your script, add finite difference check:
-function check_gradient(trainer, params)
-    ε = 1e-5
-    K = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
-    loss_0 = trainer.loss_fn(K)
-    println("Loss 0", loss_0)
-    
-    # Perturb one parameter
-    params_plus = copy(params)
-    params_plus[1] += ε
+function verify_gradients(trainer, params; ε=1e-5, n_params_to_check=5)
     nparams = n_params(trainer.kernel.feature_map)
-    assign_params!(trainer.kernel.feature_map, params_plus[1:nparams], params_plus[nparams+1:end])
-    K_plus = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
-    loss_plus = trainer.loss_fn(K_plus)
-    println("Loss +", loss_plus)
     
-    fd_grad = (loss_plus - loss_0) / ε
+    println("Checking gradients for first $n_params_to_check parameters...")
     
-    # Compare to your gradient
-    _, (grad_weights, _) = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
-    println("FD: $fd_grad, Analytic: $(grad_weights[1])")
+    for i in 1:min(n_params_to_check, length(params))
+        # Central difference
+        params_plus = copy(params)
+        params_minus = copy(params)
+        params_plus[i] += ε
+        params_minus[i] -= ε
+        
+        # Compute losses
+        assign_params!(trainer.kernel.feature_map, params_plus[1:nparams], params_plus[nparams+1:end])
+        K_plus = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
+        loss_plus = trainer.loss_fn(K_plus)
+        
+        assign_params!(trainer.kernel.feature_map, params_minus[1:nparams], params_minus[nparams+1:end])
+        K_minus = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
+        loss_minus = trainer.loss_fn(K_minus)
+        
+        fd_grad = (loss_plus - loss_minus) / (2ε)
+        
+        # Get analytic gradient
+        assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
+        K = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
+        _, (grad_w, grad_b) = loss_gradient(trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace)
+        
+        analytic_grad = i <= nparams ? grad_w[i] : grad_b[i-nparams]
+        
+        rel_error = abs(fd_grad - analytic_grad) / (abs(fd_grad) + abs(analytic_grad) + 1e-8)
+        
+        @printf "Param %d: FD=%.6e, Analytic=%.6e, RelError=%.6e %s\n" i fd_grad analytic_grad rel_error (rel_error > 0.01 ? "❌" : "✅")
+    end
 end

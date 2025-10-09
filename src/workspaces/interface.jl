@@ -67,7 +67,8 @@ Extract weight and bias gradients from the interleaved gradient buffer.
 function extract_gradients(workspace::AbstractFidelityWorkspace)
     _, _, grad_params = get_grad_buffers!(workspace)
     # Slicing already creates a copy, no need for additional copy()
-    d_weights = @view grad_params[1:2:end]
-    d_biases = grad_params[2:2:end]
+    nparams = div(length(grad_params),2)
+    d_weights = @view grad_params[1:nparams]
+    d_biases = @view grad_params[nparams+1:end]
     return d_weights, d_biases
 end
