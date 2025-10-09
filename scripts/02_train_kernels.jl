@@ -107,7 +107,7 @@ end
 
 
 function select_rbf_hyperparameters(config::ExperimentConfig{D, K}, X_train, y_train) where {D, K<:RBFHyperparameterSearchConfig}
-    gamma_range = [0.001, 0.01, 0.1, 1.0, 10.0]
+    gamma_range = [0.01, 0.1, 1.0, 10.0, 100.0]
     
     svm_module = pyimport("sklearn.svm")
     model_selection = pyimport("sklearn.model_selection")

@@ -18,6 +18,8 @@ mutable struct QuantumKernelTrainer
     K_cache::Matrix{Float64}
     grad_cache::AbstractVector{Float64}
     # loss_kwargs::Dict{Symbol, Any}
+    _grad_norms::Tuple{Float64, Float64}
+    _gradient_dir::Int
 end
 
 """
@@ -39,6 +41,7 @@ function QuantumKernelTrainer(
     X::AbstractMatrix{Float64}, 
     y::AbstractVector{Float64};
     memory_budget_gb::Float64 = 4.0,
+    _grad_norms = (0.0, 0.0),
     kwargs...
 )
     # Create workspace if not provided
@@ -52,7 +55,7 @@ function QuantumKernelTrainer(
     # loss_kw_args_dict = Dict{Symbol, Any}(pairs(kwargs))
 
     # return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)), grad_cache, loss_kw_args_dict)
-    return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)), grad_cache)
+    return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)), grad_cache, _grad_norms, 0)
 end
 
 # ==============================
@@ -108,12 +111,22 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
         
         # Pack gradients
         _, _, grad_params = get_grad_buffers!(trainer.workspace)
+        # weights = grad_params[1:nparams]
+        # biases = grad_params[nparams+1:end]
+
+        # weights_norm = norm(weights)
+        # biases_norm = norm(biases)
+       
+        # grad[1:nparams] .= (weights ./ weights_norm)
+        # grad[nparams+1:end] .= (biases ./ biases_norm)
+
         grad[1:nparams] .= grad_params[1:nparams]
         grad[nparams+1:end] .= grad_params[nparams+1:end]
 
         # println("Weight gradient norms ", norm(grad_params[1:nparams]))
         # println("Bias gradiet norms ", norm(grad_params[nparams+1:end]))
-        
+        trainer._grad_norms = (norm(grad_params[1:nparams]),norm(grad_params[nparams+1:end]))
+
         return nothing
     end
         
@@ -177,7 +190,7 @@ function train!(trainer::QuantumKernelTrainer;
         weights, biases = get_params(trainer.kernel.feature_map)
         initial_params = pack_parameters(weights, biases)
     end
-    
+   
     # Create optimization function
     obj!, grad! = create_optimization_function(trainer)
         
@@ -186,7 +199,7 @@ function train!(trainer::QuantumKernelTrainer;
     
     # Create OptimizationProblem
     # prob = OptimizationProblem(optf, initial_params, lb=ones(length(initial_params)) * -π, ub=ones(length(initial_params)) * π)
-    prob = OptimizationProblem(optf, initial_params)
+    prob = OptimizationProblem(optf, initial_params; )
     
     # Default optimizer if not provided
     if optimizer === nothing
@@ -236,7 +249,7 @@ end
 Kernel-target alignment for classification.
 Higher is better (minimize negative).
 """
-function kernel_target_alignment(K::Matrix, y::Vector)
+function kernel_target_alignment(K::Matrix, y::AbstractVector)
     y_outer = y * y'
     return -tr(K * y_outer) / (sqrt(tr(K * K)) * sqrt(tr(y_outer * y_outer)))
 end

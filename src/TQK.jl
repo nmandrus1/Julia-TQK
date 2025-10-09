@@ -61,7 +61,7 @@ export evaluate, evaluate!, evaluate_symmetric_cached!, compute_kernel_value_cac
 
 # Export workspace functions
 export create_preallocated_workspace
-export extract_gradients
+export extract_gradients, get_grad_buffers!
 
 # gradients
 export loss_gradient
@@ -72,7 +72,7 @@ export compute_angles!
 # optimization
 export create_optimization_function, train!
 # basic loss functions
-export kernel_alignment_loss
+export kernel_target_alignment
 
 # Pauli Feature Map Functions
 export create_pauli_feature_map, compute_pauli_kernel_matrix

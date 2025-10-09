@@ -4,6 +4,7 @@ using DrWatson
 using TQK 
 
 # Load required packages
+using Printf
 using LinearAlgebra
 using Random
 using Plots
@@ -69,13 +70,17 @@ function centered_kernel_target_alignment(K::Matrix, y::AbstractVector)
     n = length(y)
     H = I - ones(n, n) / n  # Centering matrix
     K_centered = H * K * H
+    # println("Norm K_Centered = ", norm(K_centered))
     y_outer = y * y'
     y_centered = H * y_outer * H
     
-    numerator = tr(K_centered * y_centered)
-    denominator = sqrt(tr(K_centered^2) * tr(y_centered^2))
+    # numerator = tr(K_centered * y_centered)
+    # denominator = sqrt(tr(K_centered^2) * tr(y_centered^2)) + 1e-8
+    numerator = -1 * tr(K_centered' * y_centered)
+    denominator = norm(K_centered) * norm(y_centered) + 1e-8
+    # println(numerator, "/", denominator)
     
-    return numerator / denominator 
+    return numerator / denominator
 end
 
 """
@@ -96,21 +101,19 @@ function smooth_svm_loss_tanh(K::Matrix, y::AbstractVector; C=1.0, β=5.0, λ=0.
     # For kernel methods: f(x) = Σⱼ αⱼyⱼK(xⱼ,x)
     # Simplified version: use kernel-based scores
     # K_normalized = K ./ (norm(K) + 1e-8)  # Normalize to prevent explosion
-    decision_values = K * y
-    
-    # Compute margins: m = y · f(x)
-    margins = y .* decision_values
-    # println(margins)
+    Y = y* y'
+    margins = Y .* K   
     
     # Smooth hinge loss using tanh
     # ℓ(m) = (1 - tanh(β(m - 1)))/2
-    smooth_hinge = sum((1 .- tanh.(β .* (margins .- 1))) ./ 2)
+    smooth_hinge = mean((1 .- tanh.(β .* (margins .- 1))) ./ 2)
     
     # Regularization (approximate ||w||² from kernel)
-    # regularization = 0.5 * λ * sum(K .^ 2) / n^2
+    regularization = λ * norm(K)
     
     # total_loss = regularization + (C / n) * smooth_hinge
-    total_loss = C * smooth_hinge
+    # println("Smooth Hinge Loss: ", smooth_hinge)
+    total_loss = C * smooth_hinge + regularization
     
     return total_loss
 end
@@ -119,19 +122,22 @@ end
 """
 Smooth SVM loss using decision function approximation and squared hinge loss .
 """
-function smooth_svm_loss(K::Matrix, y::AbstractVector)
+function smooth_svm_loss(K::Matrix, y::AbstractVector, lambda=0.1)
     Y = y * y' # Ideal kernel matrix Y_ij = y_i * y_j
 
     # We want K_ij to be close to Y_ij.
     # The margin for each pair (i,j) is Y_ij * K_ij.
     margins = Y .* K
+    # println(norm(margins))
 
     # Apply the smooth squared hinge loss
     # Penalize any pair where the margin is less than 1.
     loss = sum(max.(0, 1 .- margins).^2)
+    regularization = 0.5 * lambda * norm(K)
 
     # return loss / (length(y)^2) # Normalize    
-    return loss 
+    # return (loss + regularization)/length(y)
+    return loss + regularization
 end
 
 # Main experiment
@@ -140,31 +146,31 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
    
     # Create dataset
     # data = load_iris_binary()
-    # data = produce_data(
-    #            DataConfig(
-    #                 n_samples=500,
-    #                 data_params=RBFDataParams(
-    #                     gamma=5.0,
-    #                     n_support_vectors=50,
-    #                 ),
-    #                 seed=seed
-    #             )
-    #         )
-
     data = produce_data(
                DataConfig(
                     n_samples=500,
-                    data_params=QuantumPauliDataParams(
-                        n_qubits=2,
-                        paulis=["Y", "ZY"],
-                        entanglement="linear",
-                        reps=2,
-                        gap=0.1,
-                        grid_points_per_dim=100,
+                    data_params=RBFDataParams(
+                        gamma=100.0,
+                        n_support_vectors=250,
                     ),
                     seed=seed
                 )
             )
+
+    # data = produce_data(
+    #            DataConfig(
+    #                 n_samples=1000,
+    #                 data_params=QuantumPauliDataParams(
+    #                     n_qubits=2,
+    #                     paulis=["XZ", "YZ", "YX"],
+    #                     entanglement="linear",
+    #                     reps=2,
+    #                     gap=0.1,
+    #                     grid_points_per_dim=100,
+    #                 ),
+    #                 seed=seed
+    #             )
+    #         )
 
     X_train = permutedims(data[:X_train])
     X_test = permutedims(data[:X_test])
@@ -172,10 +178,10 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     y_test = data[:y_test]
    
     # Create simple quantum feature map
-    n_qubits = 4
+    n_qubits = 8
     n_features = 2
-    n_layers = 8
-    entanglement = all_to_all
+    n_layers = 4
+    entanglement = linear
 
     if isnothing(seed)
         seed = rand(Int)
@@ -187,11 +193,10 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     
     # Initialize with small random parameters
     assign_random_params!(feature_map, range=(-π, π) .* (1/n_qubits), seed=seed)
-    # assign_random_params!(feature_map, range=(-(1/sqrt(n_features), 1/sqrt(n_features))), seed=seed)
+    println("Initial weights and biases")
     
     # Create kernel
     kernel = FidelityKernel(feature_map)
-    K_initial = TQK.evaluate(kernel, X_train)  # With random params
     
     println("\nQuantum circuit configuration:")
     println("  Qubits: $n_qubits")
@@ -199,23 +204,23 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     println("  Total parameters: $(2 * n_params(feature_map)) ($(n_params(feature_map)) weights + $(n_params(feature_map)) biases)")
     println("  Seed: $seed")
 
-    # support vectors and corresponding ground truth values
-    # to be updated on callback
-    # 
-    model = svmtrain(K_initial, y_train, kernel=Kernel.Precomputed)
-    indices = model.SVs.indices
-    ai = vec(model.coefs) .* y_train[indices]
 
-    # loss_fn = K -> svm_loss(K, ai, y, indices)
-    # loss_fn = K -> centered_kernel_target_alignment(K, y_train)
-    # loss_fn = K -> smooth_svm_loss_tanh(K, y_train, β=1.0)
-    loss_fn = K -> smooth_svm_loss(K, y_train)
+    loss_fn = K -> centered_kernel_target_alignment(K, y_train)
+    # loss_fn = K -> kernel_target_alignment(K, y_train)
+    # loss_fn = K -> -smooth_svm_loss_tanh(K, y_train; C=1.0, λ=0.00000001, β=100)
+    # loss_fn = K -> smooth_svm_loss(K, y_train)
     trainer = QuantumKernelTrainer(
         kernel,
         loss_fn,
         X_train,
         y_train,
     )
+
+    println("Checking gradient...")
+
+    weights, biases = get_params(trainer.kernel.feature_map)
+    initial_params = vcat(weights, biases)
+    check_gradient(trainer, initial_params)
 
     # Train
     # losses = Vector{Float64}(undef, ITERS+1)
@@ -226,6 +231,8 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
         "loss" => Float64[],
         "train_accuracy" => Float64[],
         "test_accuracy" => Float64[],
+        "weight_gradient_norms" => Float64[],
+        "bias_gradient_norms" => Float64[],
     )
     
     function evaluation_callback(state, loss)
@@ -244,24 +251,31 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
         
         train_acc = mean(train_pred .== y_train)
         test_acc = mean(test_pred .== y_test)
+
+        
+        # get gradients
+        # 
+        # Pack gradients
+        norm_weight_grads = trainer._grad_norms[1]
+        norm_bias_grads = trainer._grad_norms[2]
                
         # Store metrics
         push!(metrics["iteration"], iter)
         push!(metrics["loss"], loss)
         push!(metrics["train_accuracy"], train_acc)
         push!(metrics["test_accuracy"], test_acc)
+        push!(metrics["weight_gradient_norms"], norm_weight_grads)
+        push!(metrics["bias_gradient_norms"], norm_bias_grads)
         
         if iter % 5 == 0 || iter == 1
-            println("Iter $iter: loss=$(round(loss, digits=4)), " *
-                    "train_acc=$(round(train_acc*100, digits=1))%, " *
-                    "test_acc=$(round(test_acc*100, digits=1))%")
+            @printf "Iter %d: loss=%.4f, train_acc=%.1f%%, test_acc=%.1f%%, norm(weights_g)=%e, norm(bias_g)= %e\n" iter loss (train_acc * 100) (test_acc * 100) norm_weight_grads norm_bias_grads
         end
     end
 
     println("\nStarting training ...\n")
-    ITERS = 500
+    ITERS = 100
     sol = train!(trainer,
-                 optimizer= OptimizationOptimisers.Adam(eta=0.01),
+                 optimizer= OptimizationOptimisers.AMSGrad(eta=0.1),
                  # optimizer= LBFGS(),
                  iterations=ITERS,
                  #callback=(state, loss) -> losses[state.iter + 1] = loss
@@ -464,4 +478,25 @@ function controlled_experiment(; n_trials=5)
     return results
 end
 
-# results = controlled_experiment(n_trials=5)
+# In your script, add finite difference check:
+function check_gradient(trainer, params)
+    ε = 1e-5
+    K = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
+    loss_0 = trainer.loss_fn(K)
+    println("Loss 0", loss_0)
+    
+    # Perturb one parameter
+    params_plus = copy(params)
+    params_plus[1] += ε
+    nparams = n_params(trainer.kernel.feature_map)
+    assign_params!(trainer.kernel.feature_map, params_plus[1:nparams], params_plus[nparams+1:end])
+    K_plus = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
+    loss_plus = trainer.loss_fn(K_plus)
+    println("Loss +", loss_plus)
+    
+    fd_grad = (loss_plus - loss_0) / ε
+    
+    # Compare to your gradient
+    _, (grad_weights, _) = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
+    println("FD: $fd_grad, Analytic: $(grad_weights[1])")
+end
