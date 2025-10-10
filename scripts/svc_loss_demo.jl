@@ -159,32 +159,32 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
    
     # Create dataset
     # data = load_iris_binary()
-    # data = produce_data(
-    #            DataConfig(
-    #                 n_samples=500,
-    #                 data_params=RBFDataParams(
-    #                     gamma=100.0,
-    #                     n_support_vectors=250,
-    #                 ),
-    #                 seed=seed
-    #             )
-    #         )
-
     data = produce_data(
                DataConfig(
-                    n_samples=1000,
-                    data_params=QuantumPauliDataParams(
-                        n_qubits=2,
-                        paulis=["XZ", "YZ", "YX"],
-                        entanglement="linear",
-                        reps=2,
-                        gap=0.1,
-                        grid_points_per_dim=100,
+                    n_samples=6,
+                    data_params=RBFDataParams(
+                        gamma=100.0,
+                        n_support_vectors=2,
                     ),
                     seed=seed
                 )
             )
 
+    # data = produce_data(
+    #            DataConfig(
+    #                 n_samples=1000,
+    #                 data_params=QuantumPauliDataParams(
+    #                     n_qubits=2,
+    #                     paulis=["Z", "YX", "ZY"],
+    #                     entanglement="linear",
+    #                     reps=2,
+    #                     gap=0.1,
+    #                     grid_points_per_dim=100,
+    #                 ),
+    #                 seed=seed
+    #             )
+    #         )
+    
     X_train = permutedims(data[:X_train])
     X_test = permutedims(data[:X_test])
     y_train = data[:y_train]
@@ -283,7 +283,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     end
 
     println("\nStarting training ...\n")
-    ITERS = 100
+    ITERS = 1
     sol = train!(trainer,
                  optimizer= OptimizationOptimisers.AMSGrad(eta=0.1),
                  # optimizer= LBFGS(),
@@ -500,8 +500,18 @@ function verify_gradients(trainer, params; ε=1e-5, n_params_to_check=5)
         params_plus[i] += ε
         params_minus[i] -= ε
         
-        # Compute losses
+        @debug "Before perturbation" begin
+            w, b = get_params(trainer.kernel.feature_map)
+            (param_check = params[1:5], stored_w = w[1:5], stored_b = b[1:5])
+        end
+
         assign_params!(trainer.kernel.feature_map, params_plus[1:nparams], params_plus[nparams+1:end])
+
+        @debug "After assign_params!" begin
+            w, b = get_params(trainer.kernel.feature_map)
+            (stored_w_plus = w[1:5], stored_b_plus = b[1:5])
+        end
+        # Compute losses
         K_plus = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
         loss_plus = trainer.loss_fn(K_plus)
         

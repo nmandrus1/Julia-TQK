@@ -331,7 +331,14 @@ function loss_gradient(
     
     # loss, grad = Zygote.withgradient(loss_fn, K, loss_kwargs...)
     loss, grad = Zygote.withgradient(loss_fn, K)
-    
+
+
+    @debug "Loss" loss
+    @debug "Gradient norm" norm(grad[1])
+    @debug "Symmetric?" isapprox(grad[1], grad[1]', atol=1e-10)
+    @debug "Diagonal" diag(grad[1])[1:5]
+    @debug "Off-diagonal" (grad[1][1,2], grad[1][2,1])    
+
     # Backward pass - choose path based on workspace capacity
     if n_samples <= get_backward_tile_size(workspace)
         # All samples fit in memory with 2-way split
@@ -504,6 +511,13 @@ function accumulate_adjoints!(
 )
     @inbounds for (j_local, j) in enumerate(j_indices)
         # Factor of 2 accounts for symmetric kernel contributions
+        # gradient_factor = (i == j ? 1 : 2) * dL_dK[i, j]
+         
+        # skipping diagonal contribution to gradient since diagonal is constant
+         
+        if i == j
+            continue
+        end
         gradient_factor = 2 * dL_dK[i, j]
         
         if isapprox(gradient_factor, 0.0; atol=1e-9)
@@ -537,7 +551,14 @@ function accumulate_adjoints_tiled!(
         adjoint_i = adjoints[i_local]
         
         for (j_local, j_global) in enumerate(col_indices)
+            
+            # Skip diagonal - K[i,i] = 1 always, gradient is zero
+            if i_global == j_global
+                continue
+            end
+
             # Factor of 2 accounts for symmetric kernel contributions
+            # gradient_factor = (i_global == j_global ? 1 : 2) * dL_dK[i_global, j_global]
             gradient_factor = 2 * dL_dK[i_global, j_global]
             
             if isapprox(gradient_factor, 0.0; atol=1e-9)

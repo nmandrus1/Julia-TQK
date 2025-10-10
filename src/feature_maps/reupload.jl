@@ -192,7 +192,16 @@ function gradient_chain_rule!(
     grad_angles::AbstractVector{Float64},
     x::AbstractVector{Float64}
 )
+
+
+
     num_gate_params = n_params(fm)
+
+    @debug "Feature indices" fm.gate_features[1:5]
+    @debug "Input" x
+    @debug "Weight gradients" grad_params[1:5]
+    @debug "Bias gradients" grad_params[num_gate_params+1:num_gate_params+5]
+
     # Optional: Add checks for debugging to ensure array sizes match
     @assert length(grad_params) == 2 * num_gate_params "grad_params has incorrect size."
     @assert length(grad_angles) == num_gate_params "grad_angles has incorrect size."
