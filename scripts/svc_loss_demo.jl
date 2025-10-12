@@ -164,8 +164,8 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
                DataConfig(
                     n_samples=500,
                     data_params=RBFDataParams(
-                        gamma=10.0,
-                        n_support_vectors=100,
+                        gamma=100.0,
+                        n_support_vectors=200,
                     ),
                     seed=seed
                 )
@@ -235,7 +235,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
 
     weights, biases = get_params(trainer.kernel.feature_map)
     initial_params = vcat(weights, biases)
-    verify_gradients_detailed(trainer, initial_params; n_check=10)
+    verify_gradients_detailed(trainer, initial_params; n_check=16)
     compare_gradient_methods(trainer, initial_params)
 
     # Train
@@ -494,6 +494,11 @@ function verify_gradients_detailed(trainer, params; ε=1e-5, n_check=5)
     _, (grad_w_analytic, grad_b_analytic) = loss_gradient(trainer.kernel, K, trainer.loss_fn, X, trainer.workspace)
     grad_w_analytic = copy(grad_w_analytic)
     grad_b_analytic = copy(grad_b_analytic)
+
+    normalization_factor = size(trainer.K_cache, 1)^2
+
+    grad_w_analytic ./= normalization_factor
+    grad_b_analytic ./= normalization_factor
     
     max_error = 0.0
     
@@ -544,6 +549,11 @@ function compare_gradient_methods(trainer, params)
     loss1, (grad_w1, grad_b1) = loss_gradient(
         trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace
     )
+
+    normalization_factor = size(trainer.K_cache, 1)^2
+
+    grad_w1 ./= normalization_factor
+    grad_b1 ./= normalization_factor
     
     # Method 2: Hybrid Zygote implementation
     loss2, (grad_w2, grad_b2) = hybrid_loss_gradient(

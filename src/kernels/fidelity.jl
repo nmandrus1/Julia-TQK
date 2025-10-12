@@ -390,14 +390,21 @@ function loss_gradient(
     
     # loss, grad = Zygote.withgradient(loss_fn, K, loss_kwargs...)
     loss, grad = Zygote.withgradient(loss_fn, K)
+    dL_dK = grad[1]
+    
+    # ==================================================================
+    # === THE FINAL FIX: Enforce the symmetry of the loss gradient ===
+    # Zygote might only give a one-sided gradient, but we know dL/dK
+    # must be symmetric because K is symmetric.
+    dL_dK = (dL_dK + dL_dK') ./ 2.0
 
     # Backward pass - choose path based on workspace capacity
     if n_samples <= get_backward_tile_size(workspace)
         # All samples fit in memory with 2-way split
-        return loss, loss_gradient_with_workspace!(kernel, grad[1], X, workspace)
+        return loss, loss_gradient_with_workspace!(kernel, dL_dK, X, workspace)
     else
         # Need tiling with 3-way split
-        return loss, loss_gradient_tiled_with_workspace!(kernel, grad[1], X, workspace)
+    #     return loss, loss_gradient_tiled_with_workspace!(kernel, dL_dK,  woace)
     end
 end
 
@@ -412,6 +419,7 @@ function loss_gradient_with_workspace!(
     X::AbstractMatrix,
     workspace::AbstractFidelityWorkspace
 )
+    # @show dL_dK
     n_samples = size(X, 1)
     fm = kernel.feature_map
     
@@ -450,12 +458,14 @@ function loss_gradient_with_workspace!(
         )
 
         
-      @debug "Adjoint check" begin
-            i_idx = i
-            adj_norm = norm(state(views.adjoints[i]))
-            nonzero_elems = sum(abs.(state(views.adjoints[i])) .> 1e-10)
-            (i_idx, adj_norm, nonzero_elems)
-        end        
+        @debug "Adjoint state $(i): $(views.adjoints[i])\n norm : $(norm(views.adjoints[i]))" 
+
+      # @debug "Adjoint check" begin
+      #       i_idx = i
+      #       adj_norm = norm(state(views.adjoints[i]))
+      #       nonzero_elems = sum(abs.(state(views.adjoints[i])) .> 1e-10)
+      #       (i_idx, adj_norm, nonzero_elems)
+      #   end        
 
         # Backpropagate
         compute_angle_gradients!(
@@ -466,6 +476,8 @@ function loss_gradient_with_workspace!(
             grad_collector,
             grad_angles
         )
+
+        @debug "Grad Angles (after apply_back!)" grad_angles
         
         # removed for potential scoping issues of grad params, moving
         # its declaration to the top of this function with the original call
@@ -595,6 +607,7 @@ function accumulate_adjoints!(
         # Zygote potentially already accounts for symmetry
         gradient_factor = dL_dK[i, j]
         # gradient_factor = 2 * dL_dK[i, j]
+        @debug "  - gradient_factor (dL/dK[$(i), $(j)]):" dL_dK[i,j]
         
         if isapprox(gradient_factor, 0.0; atol=1e-9)
             continue
@@ -603,9 +616,13 @@ function accumulate_adjoints!(
         psi_j = all_statevecs[j_local]
         c_ij = BLAS.dotc(length(state(psi_i)), state(psi_i), 1, state(psi_j), 1)
         
-        # adjoint += (gradient_factor * conj(c_ij)) * psi_j
-        axpy!(gradient_factor * conj(c_ij), state(psi_j), state(adjoint))
-        # axpy!(gradient_factor * c_ij, state(psi_j), state(adjoint))
+        @debug "Inside accumulate_adjoints! for λᵢ" i
+        @debug " Processing j " j
+        @debug "  - c_ij (⟨ψᵢ|ψⱼ⟩ from BLAS.dotc):" real(c_ij) imag(c_ij)
+        term = 2 * dL_dK[i, j] * c_ij
+        @debug "  - Full term (2 * dL/dK * c_ij): %.6f + %.6fi\n" real(term) imag(term)        # adjoint += (gradient_factor * conj(c_ij)) * psi_j
+
+        axpy!(gradient_factor * c_ij, state(psi_j), state(adjoint))
     end
 end
 
@@ -648,7 +665,7 @@ function accumulate_adjoints_tiled!(
             c_ij = dot(psi_i, psi_j)
             
             # adjoint_i += (gradient_factor * conj(c_ij)) * psi_j
-            axpy!(gradient_factor * conj(c_ij), psi_j, adjoint_i)
+            axpy!(gradient_factor * c_ij, psi_j, adjoint_i)
         end
     end
 end
@@ -672,28 +689,9 @@ function compute_angle_gradients!(
     # Collect angle gradients via backpropagation
     # `apply_back!` calculates ∂L/∂θ and puts it in grad_collector
 
-    # ADD DIAGNOSTIC:
-    @debug "Before apply_back!" begin
-        (adjoint_norm = norm(state(adjoint)),
-         psi_norm = norm(state(psi)),
-         collector_before = norm(grad_collector))
-    end
-    
     result = apply_back!((copy(psi), adjoint), feature_map.circuit, grad_collector)
-    
-    # ADD DIAGNOSTIC:
-    @debug "After apply_back!" begin
-        (
-         in = state(result[1]),
-         ind = state(result[2]),
-         in_norm = norm(state(result[1])),
-         ind_norm = norm(state(result[2])),
-         gradient = gradient(feature_map.circuit),
-         collector_after = norm(grad_collector),
-         max_elem = maximum(abs, grad_collector),
-         nonzero_count = sum(abs.(grad_collector) .> 1e-10))
-    end    
+    @debug result
 
-    map!(real, real_components, grad_collector)
-    # map!(x-> 2* real(x), real_components, grad_collector)
+    # map!(real, real_components, grad_collector)
+    map!(x-> 2* real(x), real_components, grad_collector)
 end
