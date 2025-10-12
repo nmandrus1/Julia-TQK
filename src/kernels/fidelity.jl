@@ -588,7 +588,6 @@ function accumulate_adjoints!(
         # gradient_factor = (i == j ? 1 : 2) * dL_dK[i, j]
          
         # skipping diagonal contribution to gradient since diagonal is constant
-         
         if i == j
             continue
         end
@@ -606,6 +605,7 @@ function accumulate_adjoints!(
         
         # adjoint += (gradient_factor * conj(c_ij)) * psi_j
         axpy!(gradient_factor * conj(c_ij), state(psi_j), state(adjoint))
+        # axpy!(gradient_factor * c_ij, state(psi_j), state(adjoint))
     end
 end
 
@@ -695,4 +695,5 @@ function compute_angle_gradients!(
     end    
 
     map!(real, real_components, grad_collector)
+    # map!(x-> 2* real(x), real_components, grad_collector)
 end

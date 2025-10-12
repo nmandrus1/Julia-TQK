@@ -115,10 +115,10 @@ function ReuploadingCircuit(n_qubits::Int, n_features::Int, n_layers::Int, entan
                 push!(gate_features, k*3 + 2)
             end           
             if remaining_encodings == 2
-                push!(all_gates, put(q => Rz(0.0)))
-                push!(gate_features, n_chunks*3 + 2)
                 push!(all_gates, put(q => Ry(0.0)))
                 push!(gate_features, n_chunks*3 + 1)
+                push!(all_gates, put(q => Rz(0.0)))
+                push!(gate_features, n_chunks*3 + 2)
             elseif remaining_encodings == 1
                 push!(all_gates, put(q => Ry(0.0)))
                 push!(gate_features, n_chunks*3 + 1)

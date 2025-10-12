@@ -107,30 +107,12 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
 
         # store gradient of parameters in workspace
         # _, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace, loss_kwargs=trainer.loss_kwargs)
-        # _, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
-        _,  (grad_w2, grad_b2) = hybrid_loss_gradient(
-            trainer.K_cache, trainer.X, trainer.kernel, trainer.loss_fn
-        )
+        _, (grad_w, grad_b) = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
         
-        # Pack gradients
-        _, _, grad_params = get_grad_buffers!(trainer.workspace)
-        # weights = grad_params[1:nparams]
-        # biases = grad_params[nparams+1:end]
+        grad[1:nparams] .= grad_w
+        grad[nparams+1:end] .= grad_b
 
-        # weights_norm = norm(weights)
-        # biases_norm = norm(biases)
-       
-
-        grad[1:nparams] .= grad_w2
-        grad[nparams+1:end] .= grad_b2
-
-        # using hybrid loss gradient for more accurate gradient
-        # grad[1:nparams] .= grad_params[1:nparams]
-        # grad[nparams+1:end] .= grad_params[nparams+1:end]
-
-        # println("Weight gradient norms ", norm(grad_params[1:nparams]))
-        # println("Bias gradiet norms ", norm(grad_params[nparams+1:end]))
-        trainer._grad_norms = (norm(grad[1:nparams]),norm(grad[nparams+1:end]))
+        trainer._grad_norms = (norm(grad_w),norm(grad_b))
 
         return nothing
     end
@@ -309,3 +291,52 @@ function example_usage()
     
     return sol, sol2
 end
+
+# Add this function to your test file
+function test_gate_reference()
+    println("\n" * "="^70)
+    println("RUNNING GATE REFERENCE TEST")
+    println("="^70)
+
+    # 1. Create a standard feature map
+    fm = ReuploadingCircuit(4, 2, 2, linear)
+
+    # 2. Get the first parameterized gate DIRECTLY from the main circuit
+    #    We need to find the first PrimitiveBlock in the circuit's subblocks.
+    first_gate_in_circuit = nothing
+    for block in fm.circuit.blocks
+        if block isa PrimitiveBlock && nparameters(block) > 0
+            first_gate_in_circuit = block
+            break
+        end
+    end
+
+    @info "Could not find a parameterized gate in the main circuit." !isnothing(first_gate_in_circuit) 
+
+    # 3. Read its initial parameter (should be 0.0)
+    initial_param = parameters(first_gate_in_circuit)[1]
+    println("Initial parameter of Gate 1 (from main circuit): ", initial_param)
+
+    # 4. Get the corresponding gate from the supposedly linked list
+    first_gate_in_list = fm.parameterized_gates[1]
+    println("Both gates should be the same object. Is it? ", first_gate_in_circuit === first_gate_in_list)
+
+
+    # 5. Now, update the parameter using the list, just like in map_inputs!
+    new_param_value = 1.234
+    setiparams!(first_gate_in_list, new_param_value)
+    println("\nCalled setiparams! on the gate from 'parameterized_gates' with value: ", new_param_value)
+
+    # 6. Read the parameter again, DIRECTLY from the main circuit
+    final_param = parameters(first_gate_in_circuit)[1]
+    println("Final parameter of Gate 1 (from main circuit):   ", final_param)
+
+    # 7. The Assertion: This is the moment of truth.
+    @info initial_param != final_param "TEST FAILED: The parameter in the main circuit did NOT change."
+    @info final_param ≈ new_param_value "TEST FAILED: The parameter was not updated to the correct value."
+
+    println("\n✅ TEST PASSED: The parameter in the main circuit was successfully updated.")
+    println("This confirms 'parameterized_gates' holds REFERENCES, not copies.")
+    println("="^70)
+end
+

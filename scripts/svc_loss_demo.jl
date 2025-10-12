@@ -18,6 +18,7 @@ using MultivariateStats
 using MLUtils
 using RDatasets
 using StatsBase
+using Test
 
 # Set random seed for reproducibility
 #Random.seed!(42)
@@ -161,10 +162,10 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     # data = load_iris_binary()
     data = produce_data(
                DataConfig(
-                    n_samples=5,
+                    n_samples=500,
                     data_params=RBFDataParams(
                         gamma=10.0,
-                        n_support_vectors=2,
+                        n_support_vectors=100,
                     ),
                     seed=seed
                 )
@@ -287,14 +288,14 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     end
 
     println("\nStarting training ...\n")
-    # ITERS = 1
-    # sol = train!(trainer,
-    #              optimizer= OptimizationOptimisers.AMSGrad(eta=0.001),
-    #              # optimizer= LBFGS(),
-    #              iterations=ITERS,
-    #              #callback=(state, loss) -> losses[state.iter + 1] = loss
-    #              callback=evaluation_callback
-    #          )
+    ITERS = 100
+    sol = train!(trainer,
+                 optimizer= OptimizationOptimisers.AMSGrad(eta=0.001),
+                 # optimizer= LBFGS(),
+                 iterations=ITERS,
+                 #callback=(state, loss) -> losses[state.iter + 1] = loss
+                 callback=evaluation_callback
+             )
     #return sol
 
     losses = metrics["loss"]
@@ -431,6 +432,7 @@ end
 """
 Comprehensive gradient verification with detailed diagnostics
 """
+
 function verify_gradients_detailed(trainer, params; ε=1e-5, n_check=5)
     nparams = n_params(trainer.kernel.feature_map)
     X = trainer.X
@@ -441,7 +443,7 @@ function verify_gradients_detailed(trainer, params; ε=1e-5, n_check=5)
     println("Checking first $n_check of $(2*nparams) parameters")
     println("Step size ε = $ε")
     
-    # Test 1: Parameter assignment works
+    # Test 1: Parameter assignment works (This part was correct)
     println("\n[1] Testing parameter assignment...")
     test_params = randn(2*nparams)
     assign_params!(trainer.kernel.feature_map, test_params[1:nparams], test_params[nparams+1:end])
@@ -461,7 +463,7 @@ function verify_gradients_detailed(trainer, params; ε=1e-5, n_check=5)
     k_pert = TQK.evaluate(trainer.kernel, X[1,:], X[2,:])
     
     println("K(x₁,x₂) change: $(abs(k_pert - k_base))")
-    @info abs(k_pert - k_base) > 1e-6 "Kernel insensitive to parameters!"
+    @test abs(k_pert - k_base) > 1e-6
     println("✅ Parameters affect kernel")
     
     # Test 3: Parameters affect loss
@@ -475,7 +477,7 @@ function verify_gradients_detailed(trainer, params; ε=1e-5, n_check=5)
     loss_pert = trainer.loss_fn(K_pert)
     
     println("Loss change: $(abs(loss_pert - loss_base))")
-    @info abs(loss_pert - loss_base) > 1e-6 "Loss insensitive to parameters!"
+    @test abs(loss_pert - loss_base) > 1e-6
     println("✅ Parameters affect loss")
     
     # Test 4: Gradient comparison
@@ -484,15 +486,19 @@ function verify_gradients_detailed(trainer, params; ε=1e-5, n_check=5)
     println("Param | Finite Diff | Analytic | Rel Error | Status")
     println("-"^70)
     
-    # Get analytic gradients once
+    # --- CHANGE START ---
+    # Get analytic gradients once by capturing the return value directly.
+    # This is much cleaner than extracting from the workspace afterwards.
     assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
     K = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
-    _, (grad_w_analytic, grad_b_analytic) = hybrid_loss_gradient(K, X, trainer.kernel, trainer.loss_fn)
+    _, (grad_w_analytic, grad_b_analytic) = loss_gradient(trainer.kernel, K, trainer.loss_fn, X, trainer.workspace)
+    grad_w_analytic = copy(grad_w_analytic)
+    grad_b_analytic = copy(grad_b_analytic)
     
     max_error = 0.0
     
     for i in 1:min(n_check, length(params))
-        # Finite difference
+        # Finite difference calculation (This part was correct)
         params_plus = copy(params)
         params_plus[i] += ε
         assign_params!(trainer.kernel.feature_map, params_plus[1:nparams], params_plus[nparams+1:end])
@@ -507,10 +513,10 @@ function verify_gradients_detailed(trainer, params; ε=1e-5, n_check=5)
         
         fd_grad = (loss_plus - loss_minus) / (2ε)
         
-        # Analytic
+        # Analytic gradient lookup (This part was correct)
         analytic_grad = i <= nparams ? grad_w_analytic[i] : grad_b_analytic[i-nparams]
         
-        # Error
+        # Error calculation (This part was correct)
         rel_error = abs(fd_grad - analytic_grad) / (abs(fd_grad) + abs(analytic_grad) + 1e-8)
         max_error = max(max_error, rel_error)
         
