@@ -107,7 +107,10 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
 
         # store gradient of parameters in workspace
         # _, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace, loss_kwargs=trainer.loss_kwargs)
-        _, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
+        # _, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
+        _,  (grad_w2, grad_b2) = hybrid_loss_gradient(
+            trainer.K_cache, trainer.X, trainer.kernel, trainer.loss_fn
+        )
         
         # Pack gradients
         _, _, grad_params = get_grad_buffers!(trainer.workspace)
@@ -117,15 +120,17 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
         # weights_norm = norm(weights)
         # biases_norm = norm(biases)
        
-        # grad[1:nparams] .= (weights ./ weights_norm)
-        # grad[nparams+1:end] .= (biases ./ biases_norm)
 
-        grad[1:nparams] .= grad_params[1:nparams]
-        grad[nparams+1:end] .= grad_params[nparams+1:end]
+        grad[1:nparams] .= grad_w2
+        grad[nparams+1:end] .= grad_b2
+
+        # using hybrid loss gradient for more accurate gradient
+        # grad[1:nparams] .= grad_params[1:nparams]
+        # grad[nparams+1:end] .= grad_params[nparams+1:end]
 
         # println("Weight gradient norms ", norm(grad_params[1:nparams]))
         # println("Bias gradiet norms ", norm(grad_params[nparams+1:end]))
-        trainer._grad_norms = (norm(grad_params[1:nparams]),norm(grad_params[nparams+1:end]))
+        trainer._grad_norms = (norm(grad[1:nparams]),norm(grad[nparams+1:end]))
 
         return nothing
     end

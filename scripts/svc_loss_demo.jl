@@ -161,9 +161,9 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     # data = load_iris_binary()
     data = produce_data(
                DataConfig(
-                    n_samples=6,
+                    n_samples=5,
                     data_params=RBFDataParams(
-                        gamma=100.0,
+                        gamma=10.0,
                         n_support_vectors=2,
                     ),
                     seed=seed
@@ -191,7 +191,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     y_test = data[:y_test]
    
     # Create simple quantum feature map
-    n_qubits = 8
+    n_qubits = 4
     n_features = 2
     n_layers = 4
     entanglement = linear
@@ -210,6 +210,9 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     
     # Create kernel
     kernel = FidelityKernel(feature_map)
+    K_train_initial = TQK.evaluate(kernel, X_train)
+    model = svmtrain(K_train_initial, y_train, kernel=Kernel.Precomputed, verbose=false)
+    p_separator_initial = plot_svm_decision_boundary(model, kernel, data)
     
     println("\nQuantum circuit configuration:")
     println("  Qubits: $n_qubits")
@@ -231,7 +234,8 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
 
     weights, biases = get_params(trainer.kernel.feature_map)
     initial_params = vcat(weights, biases)
-    verify_gradients(trainer, initial_params)
+    verify_gradients_detailed(trainer, initial_params; n_check=10)
+    compare_gradient_methods(trainer, initial_params)
 
     # Train
 
@@ -283,14 +287,14 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     end
 
     println("\nStarting training ...\n")
-    ITERS = 1
-    sol = train!(trainer,
-                 optimizer= OptimizationOptimisers.AMSGrad(eta=0.1),
-                 # optimizer= LBFGS(),
-                 iterations=ITERS,
-                 #callback=(state, loss) -> losses[state.iter + 1] = loss
-                 callback=evaluation_callback
-             )
+    # ITERS = 1
+    # sol = train!(trainer,
+    #              optimizer= OptimizationOptimisers.AMSGrad(eta=0.001),
+    #              # optimizer= LBFGS(),
+    #              iterations=ITERS,
+    #              #callback=(state, loss) -> losses[state.iter + 1] = loss
+    #              callback=evaluation_callback
+    #          )
     #return sol
 
     losses = metrics["loss"]
@@ -339,7 +343,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
 
     # p_boundary = plot_svm_decision_boundary(model, data)
     # return losses, kernel, p, p_kernels
-    return kernel, p, p_acc, p_data, model, metrics, data
+    return kernel, p, p_acc, p_data, model, metrics, data, p_separator_initial
 end
 
 
@@ -423,113 +427,139 @@ function plot_svm_decision_boundary(model, kernel, data; resolution=100, margin=
     return p
 end
 
-function controlled_experiment(; n_trials=5)
-    """Run multiple trials with FIXED seeds to remove randomness"""
-    
-    results = []
-    
-    for trial in 1:n_trials
-        println("\n" * "="^60)
-        println("TRIAL $trial")
-        println("="^60)
-        
-        # FIXED seed for data
-        data = load_iris_binary(seed=42)  # Same data every time
-        X_train, y_train = data[:X_train], data[:y_train]
-        X_test, y_test = data[:X_test], data[:y_test]
-        
-        # FIXED seed for initialization
-        Random.seed!(100 + trial)  # Different init each trial, but reproducible
-        feature_map = ReuploadingCircuit(8, 4, 2, linear)
-        assign_random_params!(feature_map, seed=100+trial)
-        kernel = FidelityKernel(feature_map)
-        
-        # Initial performance
-        K_init = TQK.evaluate(kernel, X_train)
-        model_init = svmtrain(K_init, y_train, kernel=Kernel.Precomputed, verbose=false)
-        init_acc = mean(svmpredict(model_init, K_init)[1] .== y_train)
-        init_kta = tr(K_init * (y_train*y_train')) / sqrt(tr(K_init^2) * tr((y_train*y_train')^2))
-        
-        # Train
-        loss_fn = K -> -tr(K * (y_train*y_train')) / sqrt(tr(K^2) * tr((y_train*y_train')^2))
-        trainer = QuantumKernelTrainer(kernel, loss_fn, X_train, y_train)
-        
-        sol = train!(trainer, optimizer=OptimizationOptimisers.Adam(eta=0.01), iterations=100, 
-                    callback=(s,l) -> nothing)  # Silent
-        
-        # Final performance
-        K_final = TQK.evaluate(kernel, X_train)
-        model_final = svmtrain(K_final, y_train, kernel=Kernel.Precomputed, verbose=false)
-        final_acc = mean(svmpredict(model_final, K_final)[1] .== y_train)
-        final_kta = tr(K_final * (y_train*y_train')) / sqrt(tr(K_final^2) * tr((y_train*y_train')^2))
-        
-        push!(results, (
-            init_kta=init_kta,
-            final_kta=final_kta,
-            init_acc=init_acc,
-            final_acc=final_acc,
-            improvement=final_kta - init_kta
-        ))
-        
-        println("  Init:  KTA=$(round(init_kta, digits=3)), Acc=$(round(init_acc*100, digits=1))%")
-        println("  Final: KTA=$(round(final_kta, digits=3)), Acc=$(round(final_acc*100, digits=1))%")
-        println("  Δ:     $(round((final_kta-init_kta), digits=3))")
-    end
-    
-    println("\n" * "="^60)
-    println("SUMMARY")
-    println("="^60)
-    improvements = [r.improvement for r in results]
-    println("Mean KTA improvement: $(round(mean(improvements), digits=4))")
-    println("Std KTA improvement:  $(round(std(improvements), digits=4))")
-    println("Always improves? $(all(improvements .> 0))")
-    println("="^60)
-    
-    return results
-end
 
-function verify_gradients(trainer, params; ε=1e-5, n_params_to_check=5)
+"""
+Comprehensive gradient verification with detailed diagnostics
+"""
+function verify_gradients_detailed(trainer, params; ε=1e-5, n_check=5)
     nparams = n_params(trainer.kernel.feature_map)
+    X = trainer.X
     
-    println("Checking gradients for first $n_params_to_check parameters...")
+    println("\n" * "="^70)
+    println("GRADIENT VERIFICATION")
+    println("="^70)
+    println("Checking first $n_check of $(2*nparams) parameters")
+    println("Step size ε = $ε")
     
-    for i in 1:min(n_params_to_check, length(params))
-        # Central difference
+    # Test 1: Parameter assignment works
+    println("\n[1] Testing parameter assignment...")
+    test_params = randn(2*nparams)
+    assign_params!(trainer.kernel.feature_map, test_params[1:nparams], test_params[nparams+1:end])
+    w_check, b_check = get_params(trainer.kernel.feature_map)
+    @assert w_check ≈ test_params[1:nparams] "Weight assignment failed"
+    @assert b_check ≈ test_params[nparams+1:end] "Bias assignment failed"
+    println("✅ Parameters assign correctly")
+    
+    # Test 2: Parameters affect kernel values
+    println("\n[2] Testing parameter→kernel sensitivity...")
+    assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
+    k_base = TQK.evaluate(trainer.kernel, X[1,:], X[2,:])
+    
+    test_params_perturbed = copy(params)
+    test_params_perturbed[1] += 0.1  # Large perturbation
+    assign_params!(trainer.kernel.feature_map, test_params_perturbed[1:nparams], test_params_perturbed[nparams+1:end])
+    k_pert = TQK.evaluate(trainer.kernel, X[1,:], X[2,:])
+    
+    println("K(x₁,x₂) change: $(abs(k_pert - k_base))")
+    @info abs(k_pert - k_base) > 1e-6 "Kernel insensitive to parameters!"
+    println("✅ Parameters affect kernel")
+    
+    # Test 3: Parameters affect loss
+    println("\n[3] Testing parameter→loss sensitivity...")
+    assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
+    K_base = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
+    loss_base = trainer.loss_fn(K_base)
+    
+    assign_params!(trainer.kernel.feature_map, test_params_perturbed[1:nparams], test_params_perturbed[nparams+1:end])
+    K_pert = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
+    loss_pert = trainer.loss_fn(K_pert)
+    
+    println("Loss change: $(abs(loss_pert - loss_base))")
+    @info abs(loss_pert - loss_base) > 1e-6 "Loss insensitive to parameters!"
+    println("✅ Parameters affect loss")
+    
+    # Test 4: Gradient comparison
+    println("\n[4] Computing gradients...")
+    println("-"^70)
+    println("Param | Finite Diff | Analytic | Rel Error | Status")
+    println("-"^70)
+    
+    # Get analytic gradients once
+    assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
+    K = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
+    _, (grad_w_analytic, grad_b_analytic) = hybrid_loss_gradient(K, X, trainer.kernel, trainer.loss_fn)
+    
+    max_error = 0.0
+    
+    for i in 1:min(n_check, length(params))
+        # Finite difference
         params_plus = copy(params)
-        params_minus = copy(params)
         params_plus[i] += ε
-        params_minus[i] -= ε
-        
-        @debug "Before perturbation" begin
-            w, b = get_params(trainer.kernel.feature_map)
-            (param_check = params[1:5], stored_w = w[1:5], stored_b = b[1:5])
-        end
-
         assign_params!(trainer.kernel.feature_map, params_plus[1:nparams], params_plus[nparams+1:end])
-
-        @debug "After assign_params!" begin
-            w, b = get_params(trainer.kernel.feature_map)
-            (stored_w_plus = w[1:5], stored_b_plus = b[1:5])
-        end
-        # Compute losses
-        K_plus = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
+        K_plus = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
         loss_plus = trainer.loss_fn(K_plus)
         
+        params_minus = copy(params)
+        params_minus[i] -= ε
         assign_params!(trainer.kernel.feature_map, params_minus[1:nparams], params_minus[nparams+1:end])
-        K_minus = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
+        K_minus = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
         loss_minus = trainer.loss_fn(K_minus)
         
         fd_grad = (loss_plus - loss_minus) / (2ε)
         
-        # Get analytic gradient
-        assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
-        K = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
-        _, (grad_w, grad_b) = loss_gradient(trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace)
+        # Analytic
+        analytic_grad = i <= nparams ? grad_w_analytic[i] : grad_b_analytic[i-nparams]
         
-        analytic_grad = i <= nparams ? grad_w[i] : grad_b[i-nparams]
-        
+        # Error
         rel_error = abs(fd_grad - analytic_grad) / (abs(fd_grad) + abs(analytic_grad) + 1e-8)
+        max_error = max(max_error, rel_error)
         
-        @printf "Param %d: FD=%.6e, Analytic=%.6e, RelError=%.6e %s\n" i fd_grad analytic_grad rel_error (rel_error > 0.01 ? "❌" : "✅")
+        status = rel_error < 0.01 ? "✅" : "❌"
+        @printf "%5d | %+.4e | %+.4e | %.4e | %s\n" i fd_grad analytic_grad rel_error status
     end
+    
+    println("-"^70)
+    println("Maximum relative error: $(max_error)")
+    println("="^70)
+    
+    return max_error < 0.01
+end
+
+"""
+Compare two gradient implementations
+"""
+function compare_gradient_methods(trainer, params)
+    nparams = n_params(trainer.kernel.feature_map)
+    assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
+    
+    K = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
+    
+    # Method 1: Your adjoint implementation
+    loss1, (grad_w1, grad_b1) = loss_gradient(
+        trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace
+    )
+    
+    # Method 2: Hybrid Zygote implementation
+    loss2, (grad_w2, grad_b2) = hybrid_loss_gradient(
+        K, trainer.X, trainer.kernel, trainer.loss_fn
+    )
+    
+    println("\n" * "="^70)
+    println("GRADIENT METHOD COMPARISON")
+    println("="^70)
+    println("Loss (adjoint): ", loss1)
+    println("Loss (zygote):  ", loss2)
+    println("Loss difference: ", abs(loss1 - loss2))
+    println()
+    println("Weight grad norm (adjoint): ", norm(grad_w1))
+    println("Weight grad norm (zygote):  ", norm(grad_w2))
+    println("Weight grad difference:     ", norm(grad_w1 - grad_w2))
+    println()
+    println("Bias grad norm (adjoint): ", norm(grad_b1))
+    println("Bias grad norm (zygote):  ", norm(grad_b2))
+    println("Bias grad difference:     ", norm(grad_b1 - grad_b2))
+    println("="^70)
+    
+    return (w_match = norm(grad_w1 - grad_w2) < 1e-5,
+            b_match = norm(grad_b1 - grad_b2) < 1e-5)
 end
