@@ -46,7 +46,7 @@ function QuantumKernelTrainer(
     )
     
 
-    return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1)))
+    return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)))
 end
 
 # ==============================

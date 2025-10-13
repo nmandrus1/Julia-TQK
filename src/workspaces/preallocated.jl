@@ -58,3 +58,5 @@ function reset!(ws::PreallocatedWorkspace)
 end
 
 get_capacity(ws::PreallocatedWorkspace) = ws.capacity
+
+get_forward_tile_size(ws::PreallocatedWorkspace) = 1
