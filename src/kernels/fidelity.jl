@@ -5,6 +5,7 @@ using Yao
 using YaoBlocks
 using Logging
 using Zygote
+using Base.Threads
 
 """
     FidelityKernel
@@ -98,23 +99,45 @@ end
 
 
 # Symmetric kernel K(X,X)
-function evaluate!(K::Matrix, kernel::FidelityKernel, X::AbstractMatrix, 
-                  workspace::AbstractFidelityWorkspace)
+# This new evaluate! function will be much faster.
+function evaluate!(
+    K::Matrix{Float64}, 
+    kernel::FidelityKernel, 
+    X::AbstractMatrix, 
+    workspace::PreallocatedWorkspace
+)
     n = size(X, 1)
-    statevecs = @view get_statevectors(workspace)[1:n]
     
-    # Compute all statevectors
+    # 1. Populate the statevector matrix S in parallel.
+    # Each column of S_matrix will hold a statevector |ψ⟩.
+    s_matrix_view = @view workspace.S_matrix[:, 1:n]
+    
+    # Threads.@threads for i in 1:n
     for i in 1:n
-        create_statevec!(statevecs[i], kernel.feature_map, @view X[i, :])
+        # Create a temporary ArrayReg that points directly to the memory
+        # of the i-th column of our matrix. This avoids extra allocations.
+        col_view = @view s_matrix_view[:, i]
+        temp_reg = ArrayReg(col_view)
+        
+        # This function now writes the statevector into the column's memory
+        create_statevec!(temp_reg, kernel.feature_map, @view X[i, :])
     end
 
-    
-    # Kernel matrix (upper triangle + diagonal)
-    @inbounds for i in 1:n
-        K[i,i] = 1.0
-        for j in (i+1):n
-            val = kernel_fidelity(statevecs[i], statevecs[j])
-            K[i,j] = K[j,i] = val
+    # 2. Compute the complex inner products K_complex = S' * S.
+    # We use herk! to compute only the upper triangle ('U') of the
+    # Hermitian product (conjugate transpose 'C'). This is highly optimized.
+    K_complex_view = @view workspace.K_complex[1:n, 1:n]
+    BLAS.herk!('U', 'C', 1.0, s_matrix_view, 0.0, K_complex_view)
+
+    # 3. Compute the final real kernel matrix K = |K_complex|²
+    # We loop over the computed upper triangle and fill the full matrix.
+    @inbounds for j in 1:n
+        for i in 1:j
+            # Calculate the squared magnitude of the complex inner product
+            val = abs2(K_complex_view[i, j])
+            # Assign to both upper and lower triangles
+            K[i, j] = val
+            K[j, i] = val
         end
     end
 end
@@ -168,16 +191,16 @@ function loss_gradient_finite_diff(
     
     # Gradients w.r.t. weights
     for i in 1:n_p
-        w_plus = copy(weights)
-        w_plus[i] += ε
-        assign_params!(fm, w_plus, biases)
+        copyto!(workspace.w_buffer, weights)
+        workspace.w_buffer[i] += ε
+        assign_params!(fm, workspace.w_buffer, biases)
         evaluate!(K_cache, kernel, X, workspace)
         # K_cache contains K_plus
         loss_plus = loss_fn(K_cache)
         
-        w_minus = copy(weights)
-        w_minus[i] -= ε
-        assign_params!(fm, w_minus, biases)
+        copyto!(workspace.w_buffer, weights)
+        workspace.w_buffer[i] -= ε
+        assign_params!(fm, workspace.w_buffer, biases)
         evaluate!(K_cache, kernel, X, workspace)
         # K_cache contains K_minus
         loss_minus = loss_fn(K_cache)
@@ -187,16 +210,16 @@ function loss_gradient_finite_diff(
     
     # Gradients w.r.t. biases
     for i in 1:n_p
-        b_plus = copy(biases)
-        b_plus[i] += ε
-        assign_params!(fm, weights, b_plus)
+        copyto!(workspace.b_buffer, biases)
+        workspace.b_buffer[i] += ε
+        assign_params!(fm, weights, workspace.b_buffer)
         evaluate!(K_cache, kernel, X, workspace)
         # K_cache contains K_plus
         loss_plus = loss_fn(K_cache)
         
-        b_minus = copy(biases)
-        b_minus[i] -= ε
-        assign_params!(fm, weights, b_minus)
+        copyto!(workspace.b_buffer, biases)
+        workspace.b_buffer[i] -= ε
+        assign_params!(fm, weights, workspace.b_buffer)
 
         evaluate!(K_cache, kernel, X, workspace)
         # K_cache contains K_minus
@@ -212,7 +235,6 @@ function loss_gradient_finite_diff(
     
     return loss, (grad_w, grad_b)
 end
-
 
 # function loss_gradient_finite_diff(
 #     kernel::FidelityKernel,
@@ -289,82 +311,3 @@ end
 #     return loss, (grad_w, grad_b)
 # end
 
-
-
-# Main parallel gradient function
-function loss_gradient_finite_diff(
-    kernel::FidelityKernel,
-    K_cache::AbstractMatrix,
-    loss_fn::Function,
-    X::AbstractMatrix,
-    workspace::ThreadAwareWorkspace;
-    ε::Float64=1e-5
-)
-    fm = kernel.feature_map
-    n_p = n_params(fm)
-    weights, biases = get_params(fm)
-    
-    # Combine loops for better thread utilization
-    @threads for i in 1:(2 * n_p)
-        # --- This is the Function Barrier ---
-        # It calls a worker function that will be compiled just-in-time,
-        # solving the world age problem.
-        _finite_diff_worker(i, workspace, loss_fn, X, weights, biases, ε)
-    end
-    
-    combined_grad = sum(workspace.thread_grad_buffers)
-    grad_w = @view combined_grad[1:n_p]
-    grad_b = @view combined_grad[n_p+1:end]
-    
-    assign_params!(fm, weights, biases)
-    evaluate!(K_cache, kernel, X, get_workspace(workspace, 2))
-    loss = loss_fn(K_cache)
-    
-    return loss, (grad_w, grad_b)
-end
-
-# The worker function that contains the core logic
-function _finite_diff_worker(
-    i::Int,
-    workspace::ThreadAwareWorkspace,
-    loss_fn::Function,
-    X::AbstractMatrix,
-    weights::Vector{Float64},
-    biases::Vector{Float64},
-    ε::Float64
-)
-    tid = Threads.threadid()
-    K_local = get_K_cache(workspace, tid)
-    grad_buffer_local = get_grad_buffer(workspace, tid)
-    fm_local = get_feature_map(workspace, tid)
-    kernel_local = FidelityKernel(fm_local)
-    workspace_local = get_workspace(workspace, tid)
-    n_p = length(weights)
-
-    if i <= n_p # This is a weight parameter
-        w_plus = copy(weights); w_plus[i] += ε
-        assign_params!(fm_local, w_plus, biases)
-        evaluate!(K_local, kernel_local, X, workspace_local)
-        loss_plus = loss_fn(K_local)
-        
-        w_minus = copy(weights); w_minus[i] -= ε
-        assign_params!(fm_local, w_minus, biases)
-        evaluate!(K_local, kernel_local, X, workspace_local)
-        loss_minus = loss_fn(K_local)
-        
-        grad_buffer_local[i] = (loss_plus - loss_minus) / (2ε)
-    else # This is a bias parameter
-        b_idx = i - n_p
-        b_plus = copy(biases); b_plus[b_idx] += ε
-        assign_params!(fm_local, weights, b_plus)
-        evaluate!(K_local, kernel_local, X, workspace_local)
-        loss_plus = loss_fn(K_local)
-        
-        b_minus = copy(biases); b_minus[b_idx] -= ε
-        assign_params!(fm_local, weights, b_minus)
-        evaluate!(K_local, kernel_local, X, workspace_local)
-        loss_minus = loss_fn(K_local)
-
-        grad_buffer_local[i] = (loss_plus - loss_minus) / (2ε)
-    end
-end
