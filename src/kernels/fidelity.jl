@@ -304,6 +304,160 @@ end
 # --- Gradient Implementations ---
 
 
+# Add to src/kernels/fidelity.jl
+
+"""
+    loss_gradient_finite_diff(kernel, K_cache, loss_fn, X, workspace; ε=1e-5)
+
+Compute gradients using finite differences on parameters.
+Simple and robust, requires 2P kernel evaluations.
+"""
+function loss_gradient_finite_diff(
+    kernel::FidelityKernel,
+    K_cache::AbstractMatrix,
+    loss_fn::Function,
+    X::AbstractMatrix,
+    workspace::AbstractFidelityWorkspace;
+    ε::Float64=1e-5
+)
+    fm = kernel.feature_map
+    n_p = n_params(fm)
+    grad_w = zeros(n_p)
+    grad_b = zeros(n_p)
+    
+    weights, biases = get_params(fm)
+    
+    # Gradients w.r.t. weights
+    for i in 1:n_p
+        w_plus = copy(weights)
+        w_plus[i] += ε
+        assign_params!(fm, w_plus, biases)
+        K_plus = evaluate!(K_cache, kernel, X, workspace)
+        loss_plus = loss_fn(K_plus)
+        
+        w_minus = copy(weights)
+        w_minus[i] -= ε
+        assign_params!(fm, w_minus, biases)
+        K_minus = evaluate!(K_cache, kernel, X, workspace)
+        loss_minus = loss_fn(K_minus)
+        
+        grad_w[i] = (loss_plus - loss_minus) / (2ε)
+    end
+    
+    # Gradients w.r.t. biases
+    for i in 1:n_p
+        b_plus = copy(biases)
+        b_plus[i] += ε
+        assign_params!(fm, weights, b_plus)
+        K_plus = evaluate!(K_cache, kernel, X, workspace)
+        loss_plus = loss_fn(K_plus)
+        
+        b_minus = copy(biases)
+        b_minus[i] -= ε
+        assign_params!(fm, weights, b_minus)
+        K_minus = evaluate!(K_cache, kernel, X, workspace)
+        loss_minus = loss_fn(K_minus)
+        
+        grad_b[i] = (loss_plus - loss_minus) / (2ε)
+    end
+    
+    # Restore and compute final loss
+    assign_params!(fm, weights, biases)
+    evaluate!(K_cache, kernel, X, workspace)
+    loss = loss_fn(K_cache)
+    
+    return loss, (grad_w, grad_b)
+end
+
+"""
+    loss_gradient_parameter_shift(kernel, K_cache, loss_fn, X, workspace)
+
+Compute gradients using parameter shift rule at angle level.
+Most accurate for quantum circuits, requires 2NP kernel evaluations.
+
+Uses chain rule: ∂L/∂w_k = Σⱼ (∂L/∂θ_k^(j)) · x_j[feat_k]
+where θ_k^(j) = w_k * x_j[feat_k] + b_k
+"""
+function loss_gradient_parameter_shift(
+    kernel::FidelityKernel,
+    K_cache::AbstractMatrix,
+    loss_fn::Function,
+    X::AbstractMatrix,
+    workspace::AbstractFidelityWorkspace
+)
+    fm = kernel.feature_map
+    n_samples = size(X, 1)
+    n_p = n_params(fm)
+    
+    grad_w = zeros(n_p)
+    grad_b = zeros(n_p)
+    
+    weights, biases = get_params(fm)
+    
+    # For each parameter
+    for k in 1:n_p
+        feat_idx = fm.gate_features[k]
+        
+        # Gradient w.r.t. weight w_k via chain rule
+        for j in 1:n_samples
+            x_j = X[j, feat_idx]
+            
+            # Skip if x_j ≈ 0 to avoid division issues
+            if abs(x_j) < 1e-10
+                continue
+            end
+            
+            # Shift w_k to achieve ±π/2 shift in angle θ_k^(j)
+            Δw = π/2 / x_j
+            
+            w_plus = copy(weights)
+            w_plus[k] += Δw
+            assign_params!(fm, w_plus, biases)
+            K_plus = evaluate(kernel, X, workspace=workspace)
+            loss_plus = loss_fn(K_plus)
+            
+            w_minus = copy(weights)
+            w_minus[k] -= Δw
+            assign_params!(fm, w_minus, biases)
+            K_minus = evaluate(kernel, X, workspace=workspace)
+            loss_minus = loss_fn(K_minus)
+            
+            # Parameter shift: ∂L/∂θ = [L(θ+π/2) - L(θ-π/2)] / 2
+            dL_dtheta = (loss_plus - loss_minus) / 2
+            
+            # Chain rule: ∂L/∂w_k += ∂L/∂θ_k^(j) · ∂θ/∂w = ∂L/∂θ_k^(j) · x_j
+            grad_w[k] += dL_dtheta * x_j
+        end
+        
+        # Gradient w.r.t. bias b_k
+        # ∂θ/∂b = 1, so we sum over all data points
+        for j in 1:n_samples
+            b_plus = copy(biases)
+            b_plus[k] += π/2
+            assign_params!(fm, weights, b_plus)
+            K_plus = evaluate(kernel, X, workspace=workspace)
+            loss_plus = loss_fn(K_plus)
+            
+            b_minus = copy(biases)
+            b_minus[k] -= π/2
+            assign_params!(fm, weights, b_minus)
+            K_minus = evaluate(kernel, X, workspace=workspace)
+            loss_minus = loss_fn(K_minus)
+            
+            dL_dtheta = (loss_plus - loss_minus) / 2
+            grad_b[k] += dL_dtheta
+        end
+    end
+    
+    # Restore and compute final loss
+    assign_params!(fm, weights, biases)
+    evaluate!(K_cache, kernel, X, workspace)
+    loss = loss_fn(K_cache)
+    
+    return loss, (grad_w, grad_b)
+end
+
+
 function hybrid_loss_gradient(K::Matrix, X::Matrix, kernel::FidelityKernel, loss_fn)
     loss, grad_K = Zygote.withgradient(loss_fn, K)
     dL_dK = grad_K[1]

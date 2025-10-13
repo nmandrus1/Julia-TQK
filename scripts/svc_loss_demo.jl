@@ -160,31 +160,31 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
    
     # Create dataset
     # data = load_iris_binary()
-    data = produce_data(
-               DataConfig(
-                    n_samples=500,
-                    data_params=RBFDataParams(
-                        gamma=100.0,
-                        n_support_vectors=200,
-                    ),
-                    seed=seed
-                )
-            )
-
     # data = produce_data(
     #            DataConfig(
-    #                 n_samples=1000,
-    #                 data_params=QuantumPauliDataParams(
-    #                     n_qubits=2,
-    #                     paulis=["Z", "YX", "ZY"],
-    #                     entanglement="linear",
-    #                     reps=2,
-    #                     gap=0.1,
-    #                     grid_points_per_dim=100,
+    #                 n_samples=500,
+    #                 data_params=RBFDataParams(
+    #                     gamma=100.0,
+    #                     n_support_vectors=200,
     #                 ),
     #                 seed=seed
     #             )
     #         )
+
+    data = produce_data(
+               DataConfig(
+                    n_samples=1000,
+                    data_params=QuantumPauliDataParams(
+                        n_qubits=2,
+                        paulis=["Z", "YX", "ZY"],
+                        entanglement="linear",
+                        reps=2,
+                        gap=0.1,
+                        grid_points_per_dim=100,
+                    ),
+                    seed=seed
+                )
+            )
     
     X_train = permutedims(data[:X_train])
     X_test = permutedims(data[:X_test])
@@ -236,7 +236,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     weights, biases = get_params(trainer.kernel.feature_map)
     initial_params = vcat(weights, biases)
     verify_gradients_detailed(trainer, initial_params; n_check=16)
-    compare_gradient_methods(trainer, initial_params)
+    compare_all_gradient_methods(trainer, initial_params)
 
     # Train
 
@@ -290,7 +290,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     println("\nStarting training ...\n")
     ITERS = 100
     sol = train!(trainer,
-                 optimizer= OptimizationOptimisers.AMSGrad(eta=0.001),
+                 optimizer= OptimizationOptimisers.AMSGrad(eta=0.01),
                  # optimizer= LBFGS(),
                  iterations=ITERS,
                  #callback=(state, loss) -> losses[state.iter + 1] = loss
@@ -539,43 +539,55 @@ end
 """
 Compare two gradient implementations
 """
-function compare_gradient_methods(trainer, params)
+
+"""
+Compare all three gradient methods
+"""
+function compare_all_gradient_methods(trainer, params)
     nparams = n_params(trainer.kernel.feature_map)
     assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
     
     K = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
     
-    # Method 1: Your adjoint implementation
-    loss1, (grad_w1, grad_b1) = loss_gradient(
-        trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace
-    )
-
-    normalization_factor = size(trainer.K_cache, 1)^2
-
-    grad_w1 ./= normalization_factor
-    grad_b1 ./= normalization_factor
+    # Method 1: Adjoint (current implementation)
+    t1 = @elapsed begin
+        loss1, (grad_w1, grad_b1) = loss_gradient(
+            trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace
+        )
+    end
     
-    # Method 2: Hybrid Zygote implementation
-    loss2, (grad_w2, grad_b2) = hybrid_loss_gradient(
-        K, trainer.X, trainer.kernel, trainer.loss_fn
-    )
+    # Method 2: Finite differences
+    t2 = @elapsed begin
+        loss2, (grad_w2, grad_b2) = TQK.loss_gradient_finite_diff(
+            trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace, ε=1e-5
+        )
+    end
+    
+    # # Method 3: Parameter shift
+    # t3 = @elapsed begin
+    #     loss3, (grad_w3, grad_b3) = TQK.loss_gradient_parameter_shift(
+    #         trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace
+    #     )
+    # end
     
     println("\n" * "="^70)
-    println("GRADIENT METHOD COMPARISON")
+    println("COMPREHENSIVE GRADIENT METHOD COMPARISON")
     println("="^70)
-    println("Loss (adjoint): ", loss1)
-    println("Loss (zygote):  ", loss2)
-    println("Loss difference: ", abs(loss1 - loss2))
-    println()
-    println("Weight grad norm (adjoint): ", norm(grad_w1))
-    println("Weight grad norm (zygote):  ", norm(grad_w2))
-    println("Weight grad difference:     ", norm(grad_w1 - grad_w2))
-    println()
-    println("Bias grad norm (adjoint): ", norm(grad_b1))
-    println("Bias grad norm (zygote):  ", norm(grad_b2))
-    println("Bias grad difference:     ", norm(grad_b1 - grad_b2))
+    println("Method                 | Time (s) | Loss       | ‖∇w‖      | ‖∇b‖")
+    println("-"^70)
+    @printf "Adjoint (current)      | %.4f   | %.6e | %.4e | %.4e\n" t1 loss1 norm(grad_w1) norm(grad_b1)
+    @printf "Finite Diff (ε=1e-5)   | %.4f   | %.6e | %.4e | %.4e\n" t2 loss2 norm(grad_w2) norm(grad_b2)
+    # @printf "Parameter Shift (π/2)  | %.4f   | %.6e | %.4e | %.4e\n" t3 loss3 norm(grad_w3) norm(grad_b3)
+    println("-"^70)
+    println("\nGradient Differences:")
+    println("Adjoint vs FiniteDiff:  ‖Δw‖ = $(norm(grad_w1 - grad_w2)), ‖Δb‖ = $(norm(grad_b1 - grad_b2))")
+    # println("Adjoint vs ParamShift:  ‖Δw‖ = $(norm(grad_w1 - grad_w3)), ‖Δb‖ = $(norm(grad_b1 - grad_b3))")
+    # println("FiniteDiff vs ParamShift: ‖Δw‖ = $(norm(grad_w2 - grad_w3)), ‖Δb‖ = $(norm(grad_b2 - grad_b3))")
     println("="^70)
     
-    return (w_match = norm(grad_w1 - grad_w2) < 1e-5,
-            b_match = norm(grad_b1 - grad_b2) < 1e-5)
+    return (
+        adjoint = (grad_w1, grad_b1, t1),
+        finite_diff = (grad_w2, grad_b2, t2),
+        # param_shift = (grad_w3, grad_b3, t3)
+    )
 end

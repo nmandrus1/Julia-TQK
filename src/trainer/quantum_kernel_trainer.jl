@@ -107,13 +107,14 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
 
         # store gradient of parameters in workspace
         # _, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace, loss_kwargs=trainer.loss_kwargs)
-        _, (grad_w, grad_b) = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
+        # _, (grad_w, grad_b) = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
+        _, (grad_w, grad_b) = loss_gradient_finite_diff(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
 
         # WARNING: THIS ASSUMES YOU ARE USING A NORMALIZED LOSS FUNCTION!!!
-        normalization_factor = size(trainer.K_cache, 1)^2
+        # normalization_factor = size(trainer.K_cache, 1)^2
 
-        grad_w ./= normalization_factor
-        grad_b ./= normalization_factor
+        # grad_w ./= normalization_factor
+        # grad_b ./= normalization_factor
         
         grad[1:nparams] .= grad_w
         grad[nparams+1:end] .= grad_b
