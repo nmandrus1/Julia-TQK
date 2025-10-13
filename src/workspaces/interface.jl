@@ -6,8 +6,8 @@ All workspace implementations must provide memory management for statevectors an
 abstract type AbstractFidelityWorkspace end
 
 # Required interface functions
-function get_vectors! end
-function get_grad_buffers! end
+function get_statevectors end
+function get_grad_buffer! end
 function reset! end
 function get_capacity end
 

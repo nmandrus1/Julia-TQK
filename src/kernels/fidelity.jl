@@ -101,7 +101,7 @@ end
 function evaluate!(K::Matrix, kernel::FidelityKernel, X::AbstractMatrix, 
                   workspace::AbstractFidelityWorkspace)
     n = size(X, 1)
-    statevecs = @view workspace.statevec_pool[1:n]
+    statevecs = @view get_statevectors(workspace)[1:n]
     
     # Compute all statevectors
     for i in 1:n
@@ -214,9 +214,87 @@ function loss_gradient_finite_diff(
 end
 
 
+# function loss_gradient_finite_diff(
+#     kernel::FidelityKernel,
+#     K_cache::AbstractMatrix,  # For final loss only
+#     loss_fn::Function,
+#     X::AbstractMatrix,
+#     workspace::ThreadAwareWorkspace;
+#     ε::Float64=1e-5
+# )
+#     fm = kernel.feature_map
+#     n_p = n_params(fm)
+#     weights, biases = get_params(fm)
+       
+#     # Parallel gradient computation for weights
+#     Threads.@threads for i in 1:n_p
+#         tid = Threads.threadid()
+#         K_local = get_K_cache(workspace, tid)
+#         grad_local = get_grad_buffer(workspace, tid)
+#         fm_local = get_feature_map(workspace, tid) # Use thread-local copy
+#         kernel_local = FidelityKernel(fm_local)
+        
+#         # w[i] + ε
+#         w_plus = copy(weights)
+#         w_plus[i] += ε
+#         assign_params!(fm_local, w_plus, biases)
+#         evaluate!(K_local, kernel_local, X, get_workspace(workspace, tid))
+#         loss_plus = loss_fn(K_local)
+        
+#         # w[i] - ε
+#         w_minus = copy(weights)
+#         w_minus[i] -= ε
+#         assign_params!(fm_local, w_minus, biases)
+#         evaluate!(K_local, kernel_local, X, get_workspace(workspace,tid))
+#         loss_minus = loss_fn(K_local)
+        
+#         grad_local[i] = (loss_plus - loss_minus) / (2ε)
+#     end
+    
+#     # Parallel gradient computation for biases
+#     Threads.@threads for i in 1:n_p
+#         tid = Threads.threadid()
+#         K_local = get_K_cache(workspace, tid)
+#         grad_local = get_grad_buffer(workspace, tid)
+#         fm_local = get_feature_map(workspace, tid) # Use thread-local copy
+#         kernel_local = FidelityKernel(fm_local)
+        
+#         # b[i] + ε
+#         b_plus = copy(biases)
+#         b_plus[i] += ε
+#         assign_params!(fm_local, weights, b_plus)
+#         evaluate!(K_local, kernel_local, X, get_workspace(workspace, tid))
+#         loss_plus = loss_fn(K_local)
+        
+#         # b[i] - ε
+#         b_minus = copy(biases)
+#         b_minus[i] -= ε
+#         assign_params!(fm_local, weights, b_minus)
+#         evaluate!(K_local, kernel_local, X, get_workspace(workspace, tid))
+#         loss_minus = loss_fn(K_local)
+        
+#         grad_local[n_p + i] = (loss_plus - loss_minus) / (2ε)
+#     end
+    
+#     # Combine thread-local gradients
+#     combined_grad = sum(workspace.thread_grad_buffers)
+#     grad_w = @view combined_grad[1:n_p]
+#     grad_b = @view combined_grad[n_p+1:end]
+    
+#     # Compute final loss with original parameters
+#     assign_params!(fm, weights, biases)
+#     evaluate!(K_cache, kernel, X, workspace)
+#     loss = loss_fn(K_cache)
+    
+#     return loss, (grad_w, grad_b)
+# end
+
+
+
+# Main parallel gradient function
 function loss_gradient_finite_diff(
     kernel::FidelityKernel,
-    K_cache::AbstractMatrix,  # For final loss only
+    K_cache::AbstractMatrix,
     loss_fn::Function,
     X::AbstractMatrix,
     workspace::ThreadAwareWorkspace;
@@ -225,66 +303,68 @@ function loss_gradient_finite_diff(
     fm = kernel.feature_map
     n_p = n_params(fm)
     weights, biases = get_params(fm)
-       
-    # Parallel gradient computation for weights
-    Threads.@threads for i in 1:n_p
-        tid = Threads.threadid()
-        K_local = get_K_cache(workspace, tid)
-        grad_local = get_grad_buffer(workspace, tid)
-        fm_local = get_feature_map(workspace, tid) # Use thread-local copy
-        kernel_local = FidelityKernel(fm_local)
-        
-        # w[i] + ε
-        w_plus = copy(weights)
-        w_plus[i] += ε
-        assign_params!(fm_local, w_plus, biases)
-        evaluate!(K_local, kernel_local, X, get_workspace(workspace, tid))
-        loss_plus = loss_fn(K_local)
-        
-        # w[i] - ε
-        w_minus = copy(weights)
-        w_minus[i] -= ε
-        assign_params!(fm_local, w_minus, biases)
-        evaluate!(K_local, kernel_local, X, get_workspace(workspace,tid))
-        loss_minus = loss_fn(K_local)
-        
-        grad_local[i] = (loss_plus - loss_minus) / (2ε)
+    
+    # Combine loops for better thread utilization
+    @threads for i in 1:(2 * n_p)
+        # --- This is the Function Barrier ---
+        # It calls a worker function that will be compiled just-in-time,
+        # solving the world age problem.
+        _finite_diff_worker(i, workspace, loss_fn, X, weights, biases, ε)
     end
     
-    # Parallel gradient computation for biases
-    Threads.@threads for i in 1:n_p
-        tid = Threads.threadid()
-        K_local = get_K_cache(workspace, tid)
-        grad_local = get_grad_buffer(workspace, tid)
-        fm_local = get_feature_map(workspace, tid) # Use thread-local copy
-        kernel_local = FidelityKernel(fm_local)
-        
-        # b[i] + ε
-        b_plus = copy(biases)
-        b_plus[i] += ε
-        assign_params!(fm_local, weights, b_plus)
-        evaluate!(K_local, kernel_local, X, get_workspace(workspace, tid))
-        loss_plus = loss_fn(K_local)
-        
-        # b[i] - ε
-        b_minus = copy(biases)
-        b_minus[i] -= ε
-        assign_params!(fm_local, weights, b_minus)
-        evaluate!(K_local, kernel_local, X, get_workspace(workspace, tid))
-        loss_minus = loss_fn(K_local)
-        
-        grad_local[n_p + i] = (loss_plus - loss_minus) / (2ε)
-    end
-    
-    # Combine thread-local gradients
     combined_grad = sum(workspace.thread_grad_buffers)
     grad_w = @view combined_grad[1:n_p]
     grad_b = @view combined_grad[n_p+1:end]
     
-    # Compute final loss with original parameters
     assign_params!(fm, weights, biases)
-    evaluate!(K_cache, kernel, X, workspace)
+    evaluate!(K_cache, kernel, X, get_workspace(workspace, 2))
     loss = loss_fn(K_cache)
     
     return loss, (grad_w, grad_b)
+end
+
+# The worker function that contains the core logic
+function _finite_diff_worker(
+    i::Int,
+    workspace::ThreadAwareWorkspace,
+    loss_fn::Function,
+    X::AbstractMatrix,
+    weights::Vector{Float64},
+    biases::Vector{Float64},
+    ε::Float64
+)
+    tid = Threads.threadid()
+    K_local = get_K_cache(workspace, tid)
+    grad_buffer_local = get_grad_buffer(workspace, tid)
+    fm_local = get_feature_map(workspace, tid)
+    kernel_local = FidelityKernel(fm_local)
+    workspace_local = get_workspace(workspace, tid)
+    n_p = length(weights)
+
+    if i <= n_p # This is a weight parameter
+        w_plus = copy(weights); w_plus[i] += ε
+        assign_params!(fm_local, w_plus, biases)
+        evaluate!(K_local, kernel_local, X, workspace_local)
+        loss_plus = loss_fn(K_local)
+        
+        w_minus = copy(weights); w_minus[i] -= ε
+        assign_params!(fm_local, w_minus, biases)
+        evaluate!(K_local, kernel_local, X, workspace_local)
+        loss_minus = loss_fn(K_local)
+        
+        grad_buffer_local[i] = (loss_plus - loss_minus) / (2ε)
+    else # This is a bias parameter
+        b_idx = i - n_p
+        b_plus = copy(biases); b_plus[b_idx] += ε
+        assign_params!(fm_local, weights, b_plus)
+        evaluate!(K_local, kernel_local, X, workspace_local)
+        loss_plus = loss_fn(K_local)
+        
+        b_minus = copy(biases); b_minus[b_idx] -= ε
+        assign_params!(fm_local, weights, b_minus)
+        evaluate!(K_local, kernel_local, X, workspace_local)
+        loss_minus = loss_fn(K_local)
+
+        grad_buffer_local[i] = (loss_plus - loss_minus) / (2ε)
+    end
 end

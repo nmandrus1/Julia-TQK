@@ -95,11 +95,19 @@ get_grad_buffer(ws::ThreadAwareWorkspace, thread_id::Int=Threads.threadid()) =
 get_feature_map(ws::ThreadAwareWorkspace, thread_id::Int=Threads.threadid()) = 
     ws.thread_feature_maps[thread_id-1]
 
-get_statevectors(ws::ThreadAwareWorkspace, thread_id::Int=Threads.threadid()) = 
-    ws.thread_statevec_pool[thread_id-1]
+function get_statevectors(ws::ThreadAwareWorkspace, thread_id::Int=Threads.threadid())
+    if thread_id == 1
+        return ws.thread_statevec_pool[1]
+    else
+        return ws.thread_statevec_pool[thread_id-1]
+    end
+end
 
 reset!(ws::ThreadAwareWorkspace) = 
     foreach(fill!, ws.thread_grad_buffers, 0.0)
 
 get_workspace(ws::ThreadAwareWorkspace, thread_id::Int=Threads.threadid()) =
     ThreadLocalWorkspace(get_statevectors(ws, thread_id), get_K_cache(ws, thread_id), get_grad_buffer(ws, thread_id))
+
+
+get_statevectors(ws::ThreadLocalWorkspace) = ws.statevec_pool

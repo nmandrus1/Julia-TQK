@@ -36,3 +36,7 @@ function create_preallocated_workspace(
     
     return PreallocatedWorkspace(statevec_pool, grad_buffer, K_cache)
 end
+
+function get_statevectors(ws::PreallocatedWorkspace)
+    ws.statevec_pool
+end
