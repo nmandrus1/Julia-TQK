@@ -16,10 +16,6 @@ mutable struct QuantumKernelTrainer
     workspace::AbstractFidelityWorkspace
     # Cache for kernel matrix to avoid recomputation
     K_cache::Matrix{Float64}
-    grad_cache::AbstractVector{Float64}
-    # loss_kwargs::Dict{Symbol, Any}
-    _grad_norms::Tuple{Float64, Float64}
-    _gradient_dir::Int
 end
 
 """
@@ -41,8 +37,6 @@ function QuantumKernelTrainer(
     X::AbstractMatrix{Float64}, 
     y::AbstractVector{Float64};
     memory_budget_gb::Float64 = 4.0,
-    _grad_norms = (0.0, 0.0),
-    kwargs...
 )
     # Create workspace if not provided
     workspace = create_preallocated_workspace(
@@ -50,12 +44,9 @@ function QuantumKernelTrainer(
         size(X, 1), 
         memory_budget_gb=memory_budget_gb
     )
-    grad_cache = zeros(n_params(kernel.feature_map) * 2)
     
-    # loss_kw_args_dict = Dict{Symbol, Any}(pairs(kwargs))
 
-    # return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)), grad_cache, loss_kw_args_dict)
-    return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)), grad_cache, _grad_norms, 0)
+    return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1)))
 end
 
 # ==============================
@@ -83,9 +74,6 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
         # Compute loss
         evaluate!(trainer.K_cache, trainer.kernel, trainer.X, trainer.workspace)
 
-        # store gradient of parameters in workspace
-        #loss, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
-        # loss = trainer.loss_fn(trainer.K_cache; trainer.loss_kwargs)
         loss = trainer.loss_fn(trainer.K_cache)
         
         return loss
@@ -105,22 +93,23 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
         # Compute loss
         evaluate!(trainer.K_cache, trainer.kernel, trainer.X, trainer.workspace)
 
-        # store gradient of parameters in workspace
-        # _, _ = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace, loss_kwargs=trainer.loss_kwargs)
-        # _, (grad_w, grad_b) = loss_gradient(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
-        _, (grad_w, grad_b) = loss_gradient_finite_diff(trainer.kernel, trainer.K_cache, trainer.loss_fn, trainer.X, trainer.workspace)
+ 
+        # Get loss gradient via Zygote
+        loss, grad_K = Zygote.withgradient(trainer.loss_fn, trainer.K_cache)
+        dL_dK = (grad_K[1] + grad_K[1]') ./ 2.0  # Symmetrize
 
-        # WARNING: THIS ASSUMES YOU ARE USING A NORMALIZED LOSS FUNCTION!!!
-        # normalization_factor = size(trainer.K_cache, 1)^2
 
-        # grad_w ./= normalization_factor
-        # grad_b ./= normalization_factor
+        # Get kernel gradients via parameter-shift
+        grad_w, grad_b = kernel_gradient_parameter_shift(
+            trainer.kernel, trainer.X, trainer.workspace
+        )
         
-        grad[1:nparams] .= grad_w
-        grad[nparams+1:end] .= grad_b
-
-        trainer._grad_norms = (norm(grad_w),norm(grad_b))
-
+        # Chain rule: dL/dw = Σᵢⱼ (dL/dKᵢⱼ × dKᵢⱼ/dw)
+        # Since grad_w already summed over pairs, just scale by dL_dK
+        normalization = sum(dL_dK) / (size(dL_dK, 1)^2)
+        
+        grad[1:nparams] .= grad_w .* normalization
+        grad[nparams+1:end] .= grad_b .* normalization
         return nothing
     end
         

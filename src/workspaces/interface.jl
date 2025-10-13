@@ -9,8 +9,7 @@ abstract type AbstractFidelityWorkspace end
 function get_vectors! end
 function get_grad_buffers! end
 function reset! end
-function get_forward_tile_size end
-function get_backward_tile_size end
+function get_capacity end
 
 
 # --- Helper functions for memory views ---

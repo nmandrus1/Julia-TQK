@@ -303,6 +303,100 @@ end
 
 # --- Gradient Implementations ---
 
+"""
+    kernel_gradient_parameter_shift(kernel, X, workspace) -> (grad_w, grad_b)
+
+Compute ∂K/∂wₖ and ∂K/∂bₖ using parameter-shift rule.
+
+# Returns
+- `grad_w::Vector{Float64}`: Weight gradients (n_params,)
+- `grad_b::Vector{Float64}`: Bias gradients (n_params,)
+"""
+function kernel_gradient_parameter_shift(
+    kernel::FidelityKernel,
+    X::AbstractMatrix,
+    workspace::AbstractFidelityWorkspace
+)
+    n_samples = size(X, 1)
+    n_p = n_params(kernel.feature_map)
+    fm = kernel.feature_map
+    
+    # Accumulator for final gradients
+    grad_w = zeros(n_p)
+    grad_b = zeros(n_p)
+    
+    # Store and copy original parameters
+    original_weights, original_biases = get_params(fm)
+    weights = copy(original_weights)
+    biases = copy(original_biases)
+    
+    # Cache base statevectors
+    reset!(workspace)
+    base_statevecs = get_vectors!(workspace, n_samples)
+    for i in 1:n_samples
+        create_statevec!(base_statevecs[i], fm, @view X[i, :])
+    end
+    
+    shifted_statevec = zero_state(n_qubits(fm))
+    
+    @inbounds for k in 1:n_p
+        feat_idx = fm.gate_features[k]
+        
+        # Weight gradients
+        for i in 1:n_samples
+            xᵢₖ = X[i, feat_idx]
+            if abs(xᵢₖ) < 1e-9 continue end
+            
+            shift_w = π / (2 * xᵢₖ)
+            
+            # Positive shift
+            weights[k] = original_weights[k] + shift_w
+            assign_params!(fm, weights, biases)
+            create_statevec!(shifted_statevec, fm, @view X[i, :])
+            K_plus_row = [compute_kernel_value_cached(shifted_statevec, base_statevecs[j]) 
+                          for j in 1:n_samples]
+            
+            # Negative shift
+            weights[k] = original_weights[k] - shift_w
+            assign_params!(fm, weights, biases)
+            create_statevec!(shifted_statevec, fm, @view X[i, :])
+            K_minus_row = [compute_kernel_value_cached(shifted_statevec, base_statevecs[j]) 
+                           for j in 1:n_samples]
+            
+            # Accumulate: ∂K/∂w = (∂K/∂θ) × x, summed over all pairs
+            dK_dtheta = (K_plus_row .- K_minus_row) ./ 2.0
+            grad_w[k] += 2 * sum(dK_dtheta) * xᵢₖ  # Factor of 2 for symmetry
+            
+            weights[k] = original_weights[k]
+        end
+        
+        # Bias gradients
+        shift_b = π / 2
+        for i in 1:n_samples
+            # Positive shift
+            biases[k] = original_biases[k] + shift_b
+            assign_params!(fm, weights, biases)
+            create_statevec!(shifted_statevec, fm, @view X[i, :])
+            K_plus_row = [compute_kernel_value_cached(shifted_statevec, base_statevecs[j]) 
+                          for j in 1:n_samples]
+            
+            # Negative shift
+            biases[k] = original_biases[k] - shift_b
+            assign_params!(fm, weights, biases)
+            create_statevec!(shifted_statevec, fm, @view X[i, :])
+            K_minus_row = [compute_kernel_value_cached(shifted_statevec, base_statevecs[j]) 
+                           for j in 1:n_samples]
+            
+            dK_dtheta = (K_plus_row .- K_minus_row) ./ 2.0
+            grad_b[k] += 2 * sum(dK_dtheta)
+            
+            biases[k] = original_biases[k]
+        end
+    end
+    
+    assign_params!(fm, original_weights, original_biases)
+    return grad_w, grad_b
+end
 
 # Add to src/kernels/fidelity.jl
 
@@ -368,462 +462,6 @@ function loss_gradient_finite_diff(
     
     return loss, (grad_w, grad_b)
 end
-
-"""
-    loss_gradient_parameter_shift(kernel, K_cache, loss_fn, X, workspace)
-
-Compute gradients using parameter shift rule at angle level.
-Most accurate for quantum circuits, requires 2NP kernel evaluations.
-
-Uses chain rule: ∂L/∂w_k = Σⱼ (∂L/∂θ_k^(j)) · x_j[feat_k]
-where θ_k^(j) = w_k * x_j[feat_k] + b_k
-"""
-function loss_gradient_parameter_shift(
-    kernel::FidelityKernel,
-    K_cache::AbstractMatrix,
-    loss_fn::Function,
-    X::AbstractMatrix,
-    workspace::AbstractFidelityWorkspace
-)
-    fm = kernel.feature_map
-    n_samples = size(X, 1)
-    n_p = n_params(fm)
-    
-    grad_w = zeros(n_p)
-    grad_b = zeros(n_p)
-    
-    weights, biases = get_params(fm)
-    
-    # For each parameter
-    for k in 1:n_p
-        feat_idx = fm.gate_features[k]
-        
-        # Gradient w.r.t. weight w_k via chain rule
-        for j in 1:n_samples
-            x_j = X[j, feat_idx]
-            
-            # Skip if x_j ≈ 0 to avoid division issues
-            if abs(x_j) < 1e-10
-                continue
-            end
-            
-            # Shift w_k to achieve ±π/2 shift in angle θ_k^(j)
-            Δw = π/2 / x_j
-            
-            w_plus = copy(weights)
-            w_plus[k] += Δw
-            assign_params!(fm, w_plus, biases)
-            K_plus = evaluate(kernel, X, workspace=workspace)
-            loss_plus = loss_fn(K_plus)
-            
-            w_minus = copy(weights)
-            w_minus[k] -= Δw
-            assign_params!(fm, w_minus, biases)
-            K_minus = evaluate(kernel, X, workspace=workspace)
-            loss_minus = loss_fn(K_minus)
-            
-            # Parameter shift: ∂L/∂θ = [L(θ+π/2) - L(θ-π/2)] / 2
-            dL_dtheta = (loss_plus - loss_minus) / 2
-            
-            # Chain rule: ∂L/∂w_k += ∂L/∂θ_k^(j) · ∂θ/∂w = ∂L/∂θ_k^(j) · x_j
-            grad_w[k] += dL_dtheta * x_j
-        end
-        
-        # Gradient w.r.t. bias b_k
-        # ∂θ/∂b = 1, so we sum over all data points
-        for j in 1:n_samples
-            b_plus = copy(biases)
-            b_plus[k] += π/2
-            assign_params!(fm, weights, b_plus)
-            K_plus = evaluate(kernel, X, workspace=workspace)
-            loss_plus = loss_fn(K_plus)
-            
-            b_minus = copy(biases)
-            b_minus[k] -= π/2
-            assign_params!(fm, weights, b_minus)
-            K_minus = evaluate(kernel, X, workspace=workspace)
-            loss_minus = loss_fn(K_minus)
-            
-            dL_dtheta = (loss_plus - loss_minus) / 2
-            grad_b[k] += dL_dtheta
-        end
-    end
-    
-    # Restore and compute final loss
-    assign_params!(fm, weights, biases)
-    evaluate!(K_cache, kernel, X, workspace)
-    loss = loss_fn(K_cache)
-    
-    return loss, (grad_w, grad_b)
-end
-
-
-function hybrid_loss_gradient(K::Matrix, X::Matrix, kernel::FidelityKernel, loss_fn)
-    loss, grad_K = Zygote.withgradient(loss_fn, K)
-    dL_dK = grad_K[1]
-
-    @assert isapprox(dL_dK, dL_dK', atol=1e-10) "Loss gradient should be symmetric"
-    @assert isapprox(diag(dL_dK), zeros(size(dL_dK,1)), atol=1e-10) "Diagonal gradients should be ~zero"    
-
-    n_samples = size(X, 1)
-    fm = kernel.feature_map
-    n_p = n_params(fm)
-    grad_weights = zeros(n_p)
-    grad_biases = zeros(n_p)
-    
-    for i in 1:n_samples
-        for j in 1:n_samples
-            if i == j continue end
-            
-            # Compute both statevectors with their respective angles
-            map_inputs!(fm, X[i,:])
-            ψ_i = apply!(zero_state(n_qubits(fm)), fm.circuit)
-            
-            map_inputs!(fm, X[j,:])
-            ψ_j = apply!(zero_state(n_qubits(fm)), fm.circuit)
-
-            
-            # Get dK_ij/dθ for circuit parameters affecting ψ_i
-            # First, we MUST set the circuit's parameters to correspond to x_i
-            map_inputs!(fm, X[i,:])
-            grad_i, _ = fidelity'(ψ_j => fm.circuit, zero_state(n_qubits(fm)))
-
-            # Get dK_ij/dθ for circuit parameters affecting ψ_j
-            # Now, set the circuit's parameters to correspond to x_j
-            map_inputs!(fm, X[j,:])
-            grad_j, _ = fidelity'(ψ_i => fm.circuit, zero_state(n_qubits(fm)))
-
-            # Now, grad_θ_i and grad_θ_j are correctly sized vectors of length 128
-            # containing the gradients with respect to the circuit's angles.
-            # You can remove the incorrect vec(state(...)) lines.
-
-            @debug "Hybrid Loss (Gradient of xi)" grad_i.second
-            @debug "Hybrid Loss (Gradient of xj)" grad_j.second
-
-            grad_i = grad_i[2]
-            grad_j = grad_j[2]
-
-           
-            # Chain rule: θ → (w,b)
-            for k in 1:n_p
-                feat_idx = fm.gate_features[k]
-                grad_weights[k] += dL_dK[i,j] *(grad_i[k] * X[i, feat_idx] + grad_j[k] * X[j, feat_idx])
-                grad_biases[k] += dL_dK[i,j] * (grad_i[k] + grad_j[k])
-            end
-        end
-    end
-    
-    return loss, (grad_weights, grad_biases)
-end
-
-"""
-    loss_gradient(kernel::FidelityKernel, loss_fn::Function, X::AbstractMatrix, 
-                 workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map)))
-
-Compute the gradient of a loss function with respect to kernel parameters.
-
-# Arguments
-- `kernel`: The FidelityKernel instance
-- `loss_fn`: Loss function that takes a kernel matrix and returns a scalar
-- `X`: Data matrix (n_samples × n_features)
-- `workspace`: Workspace for memory management
-
-# Returns
-- `loss`: The loss value
-- `(d_weights, d_biases)`: Gradient vectors
-"""
-function loss_gradient(
-    kernel::FidelityKernel, 
-    K::AbstractMatrix,
-    loss_fn::Function, 
-    X::AbstractMatrix,
-    workspace::AbstractFidelityWorkspace=DynamicWorkspace(n_qubits(kernel.feature_map), n_params(kernel.feature_map));
-    # loss_kwargs::Dict{Symbol, Any},
-)
-    n_samples = size(X, 1)
-    
-    # loss, grad = Zygote.withgradient(loss_fn, K, loss_kwargs...)
-    loss, grad = Zygote.withgradient(loss_fn, K)
-    dL_dK = grad[1]
-    
-    # ==================================================================
-    # === THE FINAL FIX: Enforce the symmetry of the loss gradient ===
-    # Zygote might only give a one-sided gradient, but we know dL/dK
-    # must be symmetric because K is symmetric.
-    dL_dK = (dL_dK + dL_dK') ./ 2.0
-
-    # Backward pass - choose path based on workspace capacity
-    if n_samples <= get_backward_tile_size(workspace)
-        # All samples fit in memory with 2-way split
-        return loss, loss_gradient_with_workspace!(kernel, dL_dK, X, workspace)
-    else
-        # Need tiling with 3-way split
-    #     return loss, loss_gradient_tiled_with_workspace!(kernel, dL_dK,  woace)
-    end
-end
-
-"""
-    loss_gradient_with_workspace!(kernel, dL_dK, X, workspace)
-
-Compute gradients using workspace memory without tiling (2-way memory split).
-"""
-function loss_gradient_with_workspace!(
-    kernel::FidelityKernel,
-    dL_dK::AbstractMatrix,
-    X::AbstractMatrix,
-    workspace::AbstractFidelityWorkspace
-)
-    # @show dL_dK
-    n_samples = size(X, 1)
-    fm = kernel.feature_map
-    
-    # Get gradient buffers and reset
-    reset!(workspace)
-    grad_collector, grad_angles, grad_params = get_grad_buffers!(workspace)
-    
-    # Get views for backward pass (2-way split: statevecs + adjoints)
-    views = get_backward_views(workspace, n_samples)
-    
-    # Pre-compute all statevectors
-    for i in 1:n_samples
-        create_statevec!(views.statevecs[i], fm, @view X[i, :])
-    end
-    
-    # Initialize adjoints to zero
-    for adjoint in views.adjoints
-        zero!(adjoint)
-    end
-    
-    # Process each data point
-    for i in 1:n_samples
-        # grad_collector and grad_angles should ONLY accumualte for
-        # the datapoint i
-        fill!(grad_collector, 0.0)
-        fill!(grad_angles, 0.0)
-
-        # Accumulate adjoints
-        accumulate_adjoints!(
-            views.adjoints[i],
-            views.statevecs[i],
-            views.statevecs,
-            dL_dK,
-            i,
-            1:n_samples
-        )
-
-        
-        @debug "Adjoint state $(i): $(views.adjoints[i])\n norm : $(norm(views.adjoints[i]))" 
-
-      # @debug "Adjoint check" begin
-      #       i_idx = i
-      #       adj_norm = norm(state(views.adjoints[i]))
-      #       nonzero_elems = sum(abs.(state(views.adjoints[i])) .> 1e-10)
-      #       (i_idx, adj_norm, nonzero_elems)
-      #   end        
-
-        # Backpropagate
-        compute_angle_gradients!(
-            views.statevecs[i],
-            views.adjoints[i],
-            @view(X[i, :]),
-            fm,
-            grad_collector,
-            grad_angles
-        )
-
-        @debug "Grad Angles (after apply_back!)" grad_angles
-        
-        # removed for potential scoping issues of grad params, moving
-        # its declaration to the top of this function with the original call
-        # _, _, grad_params = get_grad_buffers!(workspace)
-        gradient_chain_rule!(grad_params, fm, grad_angles, @view X[i, :])
-    end
-    
-    return extract_gradients(workspace)
-end
-
-"""
-    loss_gradient_tiled_with_workspace!(kernel, dL_dK, X, workspace)
-
-Compute gradients using workspace memory with tiling (3-way memory split).
-"""
-function loss_gradient_tiled_with_workspace!(
-    kernel::FidelityKernel,
-    dL_dK::AbstractMatrix,
-    X::AbstractMatrix,
-    workspace::AbstractFidelityWorkspace
-)
-    n_samples = size(X, 1)
-    fm = kernel.feature_map
-    
-    # Get gradient buffers and reset
-    reset!(workspace)
-    grad_collector, grad_angles, grad_params = get_grad_buffers!(workspace)
-    
-    # Get tile size for 3-way split
-    tile_size = min(get_backward_tiled_tile_size(workspace), n_samples)
-    
-    # Process in row tiles
-    for i_start in 1:tile_size:n_samples
-        # grad_collector and grad_angles should ONLY accumualte for
-        # the datapoint i
-        fill!(grad_collector, 0.0)
-        fill!(grad_angles, 0.0)
-
-        i_end = min(i_start + tile_size - 1, n_samples)
-        row_tile_size = i_end - i_start + 1
-        
-        # Get views for this tile (3-way split for tiling)
-        # Note: col_size may be different from row_tile_size
-        max_col_size = tile_size
-        views = get_backward_tiled_views(workspace, row_tile_size, max_col_size)
-        
-        # Compute row statevectors
-        for (idx, i) in enumerate(i_start:i_end)
-            create_statevec!(views.statevecs[idx], fm, @view X[i, :])
-            zero!(views.adjoints[idx])
-        end
-        
-        # Accumulate contributions from all column tiles
-        for j_start in 1:tile_size:n_samples
-            j_end = min(j_start + tile_size - 1, n_samples)
-            col_size = j_end - j_start + 1
-            
-            if i_start == j_start
-                # Reuse row statevectors for diagonal block
-                col_statevecs = views.statevecs
-            else
-                # Use the dedicated column statevector region
-                col_statevecs = @view views.col_statevecs[1:col_size]
-                
-                for (idx, j) in enumerate(j_start:j_end)
-                    create_statevec!(col_statevecs[idx], fm, @view X[j, :])
-                end
-            end
-            
-            # Accumulate adjoints for this tile combination
-            accumulate_adjoints_tiled!(
-                views.adjoints,
-                views.statevecs,
-                col_statevecs,
-                dL_dK,
-                i_start:i_end,
-                j_start:j_end
-            )
-        end
-        
-        # Backpropagate completed adjoints for this row tile
-        for (i_local, i_global) in enumerate(i_start:i_end)
-            compute_angle_gradients!(
-                views.statevecs[i_local],
-                views.adjoints[i_local],
-                @view(X[i_global, :]),
-                fm,
-                grad_collector,
-                grad_angles
-            )
-            
-            # removed for potential scoping issues of grad params, moving
-            # its declaration to the top of this function with the original call
-            # _, _, grad_params = get_grad_buffers!(workspace)
-            gradient_chain_rule!(grad_params, fm, grad_angles, @view X[i_global, :])
-        end
-    end
-    
-    return extract_gradients(workspace)
-end
-
-# --- Workhorse Functions (No Memory Allocation) ---
-
-"""
-    accumulate_adjoints!(adjoint, psi_i, all_statevecs, dL_dK, i, j_indices)
-
-Accumulate adjoint contributions for a single data point.
-Modifies adjoint in-place. Allocates no memory.
-"""
-function accumulate_adjoints!(
-    adjoint::ArrayReg,
-    psi_i::ArrayReg,
-    all_statevecs::AbstractVector{<:ArrayReg},
-    dL_dK::AbstractMatrix,
-    i::Int,
-    j_indices::AbstractVector{Int}
-)
-    @inbounds for (j_local, j) in enumerate(j_indices)
-        # Factor of 2 accounts for symmetric kernel contributions
-        # gradient_factor = (i == j ? 1 : 2) * dL_dK[i, j]
-         
-        # skipping diagonal contribution to gradient since diagonal is constant
-        if i == j
-            continue
-        end
-
-        # Zygote potentially already accounts for symmetry
-        gradient_factor = dL_dK[i, j]
-        # gradient_factor = 2 * dL_dK[i, j]
-        @debug "  - gradient_factor (dL/dK[$(i), $(j)]):" dL_dK[i,j]
-        
-        if isapprox(gradient_factor, 0.0; atol=1e-9)
-            continue
-        end
-        
-        psi_j = all_statevecs[j_local]
-        c_ij = BLAS.dotc(length(state(psi_i)), state(psi_i), 1, state(psi_j), 1)
-        
-        @debug "Inside accumulate_adjoints! for λᵢ" i
-        @debug " Processing j " j
-        @debug "  - c_ij (⟨ψᵢ|ψⱼ⟩ from BLAS.dotc):" real(c_ij) imag(c_ij)
-        term = 2 * dL_dK[i, j] * c_ij
-        @debug "  - Full term (2 * dL/dK * c_ij): %.6f + %.6fi\n" real(term) imag(term)        # adjoint += (gradient_factor * conj(c_ij)) * psi_j
-
-        axpy!(gradient_factor * c_ij, state(psi_j), state(adjoint))
-    end
-end
-
-"""
-    accumulate_adjoints_tiled!(adjoints, row_statevecs, col_statevecs, dL_dK, row_indices, col_indices)
-
-Accumulate adjoint contributions for a tile of data points.
-Modifies adjoints in-place. Allocates no memory.
-"""
-function accumulate_adjoints_tiled!(
-    adjoints::AbstractVector{<:ArrayReg},
-    row_statevecs::AbstractVector{<:ArrayReg},
-    col_statevecs::AbstractVector{<:ArrayReg},
-    dL_dK::AbstractMatrix,
-    row_indices::AbstractVector{Int},
-    col_indices::AbstractVector{Int}
-)
-    @inbounds for (i_local, i_global) in enumerate(row_indices)
-        psi_i = row_statevecs[i_local]
-        adjoint_i = adjoints[i_local]
-        
-        for (j_local, j_global) in enumerate(col_indices)
-            
-            # Skip diagonal - K[i,i] = 1 always, gradient is zero
-            if i_global == j_global
-                continue
-            end
-
-            # Factor of 2 accounts for symmetric kernel contributions
-            # gradient_factor = (i_global == j_global ? 1 : 2) * dL_dK[i_global, j_global]
-            # gradient_factor = 2 * dL_dK[i_global, j_global]
-            # Zygote potentially already accounts for symmetry
-            gradient_factor = dL_dK[i_global, j_global]
-            
-            if isapprox(gradient_factor, 0.0; atol=1e-9)
-                continue
-            end
-            
-            psi_j = col_statevecs[j_local]
-            c_ij = dot(psi_i, psi_j)
-            
-            # adjoint_i += (gradient_factor * conj(c_ij)) * psi_j
-            axpy!(gradient_factor * c_ij, psi_j, adjoint_i)
-        end
-    end
-end
-
 """
     compute_angle_gradients!(psi, adjoint, x, feature_map, grad_collector, real_components)
 

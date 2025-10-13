@@ -64,8 +64,8 @@ export create_preallocated_workspace
 export extract_gradients, get_grad_buffers!
 
 # gradients
-export loss_gradient, hybrid_loss_gradient, loss_gradient_finite_diff, loss_gradient_finite_diff
-
+export loss_gradient_finite_diff, kernel_gradient_parameter_shift
+# 
 # Export utility functions
 export compute_angles!
 
