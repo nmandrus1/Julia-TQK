@@ -5,8 +5,6 @@ using YaoBlocks
 using Yao.AD
 using LinearAlgebra
 using ArgCheck
-using LRUCache
-using ProgressMeter
 using Random
 using Base.Threads
 
@@ -16,10 +14,10 @@ include("workspaces/interface.jl")
 include("feature_maps/interface.jl")
 include("feature_maps/reupload.jl")
 
-include("kernels/fidelity.jl")
-
-include("workspaces/dynamic.jl")
 include("workspaces/preallocated.jl")
+include("workspaces/parallel.jl")
+
+include("kernels/fidelity.jl")
 
 include("trainer/quantum_kernel_trainer.jl")
 
@@ -37,7 +35,7 @@ include("data_generation/load_data.jl")
 # Export types
 export AbstractQuantumFeatureMap, ReuploadingCircuit, FidelityKernel
 export EntanglementBlock, linear, alternating, all_to_all
-export AbstractFidelityWorkspace, PreallocatedWorkspace, DynamicWorkspace
+export AbstractFidelityWorkspace, PreallocatedWorkspace, ThreadAwareWorkspace
 export QuantumKernelTrainer
 
 # Qiskit
@@ -57,15 +55,15 @@ export n_qubits, n_features, n_params, map_inputs!
 export assign_params!, assign_random_params!, get_params
 
 # Export functions for kernels
-export evaluate, evaluate!, evaluate_symmetric_cached!, compute_kernel_value_cached, evaluate_asymmetric_cached!, calculate_tile_size
+export evaluate, evaluate!
 
 # Export workspace functions
-export create_preallocated_workspace
+export create_preallocated_workspace, create_thread_aware_workspace
 export extract_gradients, get_grad_buffers!
-
+export get_workspace, get_K_cache, get_grad_buffer, get_feature_map, get_statevectors, get_workspace
 # gradients
-export loss_gradient_finite_diff, kernel_gradient_parameter_shift
-# 
+export loss_gradient_finite_diff
+
 # Export utility functions
 export compute_angles!
 

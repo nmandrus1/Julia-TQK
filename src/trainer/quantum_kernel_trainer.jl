@@ -1,6 +1,7 @@
 using LinearAlgebra
 using Optimization
 using Random
+using Base.Threads
 
 """
     QuantumKernelTrainer
@@ -39,11 +40,20 @@ function QuantumKernelTrainer(
     memory_budget_gb::Float64 = 4.0,
 )
     # Create workspace if not provided
-    workspace = create_preallocated_workspace(
-        kernel.feature_map, 
-        size(X, 1), 
-        memory_budget_gb=memory_budget_gb
-    )
+
+    if nthreads() > 1
+        workspace = create_thread_aware_workspace(
+            kernel.feature_map, 
+            size(X, 1), 
+            (size(X, 1), size(X, 1))
+        )
+    else 
+        workspace = create_preallocated_workspace(
+            kernel.feature_map, 
+            size(X, 1), 
+            (size(X, 1), size(X, 1))
+        )
+    end
     
 
     return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)))
@@ -90,26 +100,16 @@ function create_optimization_function(trainer::QuantumKernelTrainer)
         # Update kernel parameters
         assign_params!(trainer.kernel.feature_map, weights, biases)
         
-        # Compute loss
-        evaluate!(trainer.K_cache, trainer.kernel, trainer.X, trainer.workspace)
-
- 
-        # Get loss gradient via Zygote
-        loss, grad_K = Zygote.withgradient(trainer.loss_fn, trainer.K_cache)
-        dL_dK = (grad_K[1] + grad_K[1]') ./ 2.0  # Symmetrize
-
-
-        # Get kernel gradients via parameter-shift
-        grad_w, grad_b = kernel_gradient_parameter_shift(
-            trainer.kernel, trainer.X, trainer.workspace
+        loss, (grad_w, grad_b) = loss_gradient_finite_diff(
+            trainer.kernel,
+            trainer.K_cache,
+            trainer.loss_fn,
+            trainer.X,
+            trainer.workspace
         )
-        
-        # Chain rule: dL/dw = Σᵢⱼ (dL/dKᵢⱼ × dKᵢⱼ/dw)
-        # Since grad_w already summed over pairs, just scale by dL_dK
-        normalization = sum(dL_dK) / (size(dL_dK, 1)^2)
-        
-        grad[1:nparams] .= grad_w .* normalization
-        grad[nparams+1:end] .= grad_b .* normalization
+               
+        grad[1:nparams] .= grad_w
+        grad[nparams+1:end] .= grad_b
         return nothing
     end
         

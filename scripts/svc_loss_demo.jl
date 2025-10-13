@@ -11,14 +11,13 @@ using Plots
 using Optimization 
 using OptimizationOptimJL
 using OptimizationOptimisers
-using BlackBoxOptim
-using OptimizationBBO
 using LIBSVM
 using MultivariateStats
 using MLUtils
 using RDatasets
 using StatsBase
 using Test
+# using Yao
 
 # Set random seed for reproducibility
 #Random.seed!(42)
@@ -160,31 +159,31 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
    
     # Create dataset
     # data = load_iris_binary()
-    # data = produce_data(
-    #            DataConfig(
-    #                 n_samples=500,
-    #                 data_params=RBFDataParams(
-    #                     gamma=100.0,
-    #                     n_support_vectors=200,
-    #                 ),
-    #                 seed=seed
-    #             )
-    #         )
-
     data = produce_data(
                DataConfig(
-                    n_samples=1000,
-                    data_params=QuantumPauliDataParams(
-                        n_qubits=2,
-                        paulis=["Z", "YX", "ZY"],
-                        entanglement="linear",
-                        reps=2,
-                        gap=0.1,
-                        grid_points_per_dim=100,
+                    n_samples=500,
+                    data_params=RBFDataParams(
+                        gamma=100.0,
+                        n_support_vectors=200,
                     ),
                     seed=seed
                 )
             )
+
+    # data = produce_data(
+    #            DataConfig(
+    #                 n_samples=500,
+    #                 data_params=QuantumPauliDataParams(
+    #                     n_qubits=2,
+    #                     paulis=["Z", "YX", "ZY"],
+    #                     entanglement="linear",
+    #                     reps=2,
+    #                     gap=0.1,
+    #                     grid_points_per_dim=100,
+    #                 ),
+    #                 seed=seed
+    #             )
+    #         )
     
     X_train = permutedims(data[:X_train])
     X_test = permutedims(data[:X_test])
@@ -192,7 +191,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     y_test = data[:y_test]
    
     # Create simple quantum feature map
-    n_qubits = 4
+    n_qubits = 8
     n_features = 2
     n_layers = 4
     entanglement = linear
@@ -235,8 +234,6 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
 
     weights, biases = get_params(trainer.kernel.feature_map)
     initial_params = vcat(weights, biases)
-    verify_gradients_detailed(trainer, initial_params; n_check=16)
-    compare_all_gradient_methods(trainer, initial_params)
 
     # Train
 
@@ -267,23 +264,15 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
         train_acc = mean(train_pred .== y_train)
         test_acc = mean(test_pred .== y_test)
 
-        
-        # get gradients
-        # 
-        # Pack gradients
-        norm_weight_grads = trainer._grad_norms[1]
-        norm_bias_grads = trainer._grad_norms[2]
-               
+                       
         # Store metrics
         push!(metrics["iteration"], iter)
         push!(metrics["loss"], loss)
         push!(metrics["train_accuracy"], train_acc)
         push!(metrics["test_accuracy"], test_acc)
-        push!(metrics["weight_gradient_norms"], norm_weight_grads)
-        push!(metrics["bias_gradient_norms"], norm_bias_grads)
         
         if iter % 5 == 0 || iter == 1
-            @printf "Iter %d: loss=%.4f, train_acc=%.1f%%, test_acc=%.1f%%, norm(weights_g)=%e, norm(bias_g)= %e\n" iter loss (train_acc * 100) (test_acc * 100) norm_weight_grads norm_bias_grads
+            @printf "Iter %d: loss=%.4f, train_acc=%.1f%%, test_acc=%.1f%%\n" iter loss (train_acc * 100) (test_acc * 100) 
         end
     end
 
@@ -376,52 +365,41 @@ function plot_classification_data(data::Dict)
     return p
 end
 
-
-
 function plot_svm_decision_boundary(model, kernel, data; resolution=100, margin=0.5)
-    X_train = data[:X_train]
-    X_test = data[:X_test]
+    # Data is (n_features × n_samples), need to transpose for kernel eval
+    X_train_rows = data[:X_train]'  # Now (n_train × n_features)
+    X_test_rows = data[:X_test]'
     y_train = data[:y_train]
     y_test = data[:y_test]
     
-    # Get feature ranges
-    x_min, x_max = minimum(X_train[1, :]) - margin, maximum(X_train[1, :]) + margin
-    y_min, y_max = minimum(X_train[2, :]) - margin, maximum(X_train[2, :]) + margin
+    # Get feature ranges from column-major data
+    x_min, x_max = minimum(data[:X_train][1, :]) - margin, maximum(data[:X_train][1, :]) + margin
+    y_min, y_max = minimum(data[:X_train][2, :]) - margin, maximum(data[:X_train][2, :]) + margin
     
-    # Create mesh grid
+    # Create mesh grid (already in row-major format)
     x_range = range(x_min, x_max, length=resolution)
     y_range = range(y_min, y_max, length=resolution)
+    X_grid = hcat([[x, y] for x in x_range for y in y_range]...)'  # (resolution² × 2)
     
-    # Create grid points matrix (2 x resolution^2)
-    X_grid = vcat([[x y] for x in x_range for y in y_range]...)
+    # Kernel evaluation: K(grid, train) → (n_grid × n_train)
+    K_grid = TQK.evaluate(kernel, X_train_rows, X_grid)
     
-    # Compute kernel matrix between grid and training data
-    K_grid = TQK.evaluate(kernel, X_grid, X_train')
-    
-    # Predict on all grid points at once
-    Z_flat = svmpredict(model, K_grid')[1]
-    
-    # Reshape to grid
+    # LIBSVM prediction expects (n_test × n_train) - no transpose needed
+    Z_flat = svmpredict(model, K_grid)[1]
     Z = reshape(Z_flat, resolution, resolution)
     
-    # Plot decision boundary
+    # Plot (use transposed data for scatter)
     p = contourf(x_range, y_range, Z, levels=[-1.5, 0, 1.5], 
                  color=:RdBu, alpha=0.7, colorbar=false)
     
-    # Plot training data
-    train_neg = y_train .== -1
-    train_pos = y_train .== 1
-    scatter!(p, X_train[1, train_neg], X_train[2, train_neg], 
+    scatter!(p, X_train_rows[y_train .== -1, 1], X_train_rows[y_train .== -1, 2], 
              color=:blue, marker=:circle, label="Train (−1)", markersize=6, alpha=0.2)
-    scatter!(p, X_train[1, train_pos], X_train[2, train_pos], 
+    scatter!(p, X_train_rows[y_train .== 1, 1], X_train_rows[y_train .== 1, 2], 
              color=:red, marker=:circle, label="Train (+1)", markersize=6, alpha=0.2)
     
-    # Plot test data
-    test_neg = y_test .== -1
-    test_pos = y_test .== 1
-    scatter!(p, X_test[1, test_neg], X_test[2, test_neg], 
+    scatter!(p, X_test_rows[y_test .== -1, 1], X_test_rows[y_test .== -1, 2], 
              color=:blue, marker=:utriangle, label="Test (−1)", markersize=7, alpha=0.2)
-    scatter!(p, X_test[1, test_pos], X_test[2, test_pos], 
+    scatter!(p, X_test_rows[y_test .== 1, 1], X_test_rows[y_test .== 1, 2], 
              color=:red, marker=:diamond, label="Test (+1)", markersize=7, alpha=0.2)
     
     plot!(p, xlabel="Feature 1", ylabel="Feature 2", legend=:best)
@@ -429,165 +407,3 @@ function plot_svm_decision_boundary(model, kernel, data; resolution=100, margin=
 end
 
 
-"""
-Comprehensive gradient verification with detailed diagnostics
-"""
-
-function verify_gradients_detailed(trainer, params; ε=1e-5, n_check=5)
-    nparams = n_params(trainer.kernel.feature_map)
-    X = trainer.X
-    
-    println("\n" * "="^70)
-    println("GRADIENT VERIFICATION")
-    println("="^70)
-    println("Checking first $n_check of $(2*nparams) parameters")
-    println("Step size ε = $ε")
-    
-    # Test 1: Parameter assignment works (This part was correct)
-    println("\n[1] Testing parameter assignment...")
-    test_params = randn(2*nparams)
-    assign_params!(trainer.kernel.feature_map, test_params[1:nparams], test_params[nparams+1:end])
-    w_check, b_check = get_params(trainer.kernel.feature_map)
-    @assert w_check ≈ test_params[1:nparams] "Weight assignment failed"
-    @assert b_check ≈ test_params[nparams+1:end] "Bias assignment failed"
-    println("✅ Parameters assign correctly")
-    
-    # Test 2: Parameters affect kernel values
-    println("\n[2] Testing parameter→kernel sensitivity...")
-    assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
-    k_base = TQK.evaluate(trainer.kernel, X[1,:], X[2,:])
-    
-    test_params_perturbed = copy(params)
-    test_params_perturbed[1] += 0.1  # Large perturbation
-    assign_params!(trainer.kernel.feature_map, test_params_perturbed[1:nparams], test_params_perturbed[nparams+1:end])
-    k_pert = TQK.evaluate(trainer.kernel, X[1,:], X[2,:])
-    
-    println("K(x₁,x₂) change: $(abs(k_pert - k_base))")
-    @test abs(k_pert - k_base) > 1e-6
-    println("✅ Parameters affect kernel")
-    
-    # Test 3: Parameters affect loss
-    println("\n[3] Testing parameter→loss sensitivity...")
-    assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
-    K_base = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
-    loss_base = trainer.loss_fn(K_base)
-    
-    assign_params!(trainer.kernel.feature_map, test_params_perturbed[1:nparams], test_params_perturbed[nparams+1:end])
-    K_pert = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
-    loss_pert = trainer.loss_fn(K_pert)
-    
-    println("Loss change: $(abs(loss_pert - loss_base))")
-    @test abs(loss_pert - loss_base) > 1e-6
-    println("✅ Parameters affect loss")
-    
-    # Test 4: Gradient comparison
-    println("\n[4] Computing gradients...")
-    println("-"^70)
-    println("Param | Finite Diff | Analytic | Rel Error | Status")
-    println("-"^70)
-    
-    # --- CHANGE START ---
-    # Get analytic gradients once by capturing the return value directly.
-    # This is much cleaner than extracting from the workspace afterwards.
-    assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
-    K = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
-    _, (grad_w_analytic, grad_b_analytic) = loss_gradient(trainer.kernel, K, trainer.loss_fn, X, trainer.workspace)
-    grad_w_analytic = copy(grad_w_analytic)
-    grad_b_analytic = copy(grad_b_analytic)
-
-    normalization_factor = size(trainer.K_cache, 1)^2
-
-    grad_w_analytic ./= normalization_factor
-    grad_b_analytic ./= normalization_factor
-    
-    max_error = 0.0
-    
-    for i in 1:min(n_check, length(params))
-        # Finite difference calculation (This part was correct)
-        params_plus = copy(params)
-        params_plus[i] += ε
-        assign_params!(trainer.kernel.feature_map, params_plus[1:nparams], params_plus[nparams+1:end])
-        K_plus = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
-        loss_plus = trainer.loss_fn(K_plus)
-        
-        params_minus = copy(params)
-        params_minus[i] -= ε
-        assign_params!(trainer.kernel.feature_map, params_minus[1:nparams], params_minus[nparams+1:end])
-        K_minus = TQK.evaluate(trainer.kernel, X; workspace=trainer.workspace)
-        loss_minus = trainer.loss_fn(K_minus)
-        
-        fd_grad = (loss_plus - loss_minus) / (2ε)
-        
-        # Analytic gradient lookup (This part was correct)
-        analytic_grad = i <= nparams ? grad_w_analytic[i] : grad_b_analytic[i-nparams]
-        
-        # Error calculation (This part was correct)
-        rel_error = abs(fd_grad - analytic_grad) / (abs(fd_grad) + abs(analytic_grad) + 1e-8)
-        max_error = max(max_error, rel_error)
-        
-        status = rel_error < 0.01 ? "✅" : "❌"
-        @printf "%5d | %+.4e | %+.4e | %.4e | %s\n" i fd_grad analytic_grad rel_error status
-    end
-    
-    println("-"^70)
-    println("Maximum relative error: $(max_error)")
-    println("="^70)
-    
-    return max_error < 0.01
-end
-
-"""
-Compare two gradient implementations
-"""
-
-"""
-Compare all three gradient methods
-"""
-function compare_all_gradient_methods(trainer, params)
-    nparams = n_params(trainer.kernel.feature_map)
-    assign_params!(trainer.kernel.feature_map, params[1:nparams], params[nparams+1:end])
-    
-    K = TQK.evaluate(trainer.kernel, trainer.X; workspace=trainer.workspace)
-    
-    # Method 1: Adjoint (current implementation)
-    t1 = @elapsed begin
-        loss1, (grad_w1, grad_b1) = loss_gradient(
-            trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace
-        )
-    end
-    
-    # Method 2: Finite differences
-    t2 = @elapsed begin
-        loss2, (grad_w2, grad_b2) = TQK.loss_gradient_finite_diff(
-            trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace, ε=1e-5
-        )
-    end
-    
-    # # Method 3: Parameter shift
-    # t3 = @elapsed begin
-    #     loss3, (grad_w3, grad_b3) = TQK.loss_gradient_parameter_shift(
-    #         trainer.kernel, K, trainer.loss_fn, trainer.X, trainer.workspace
-    #     )
-    # end
-    
-    println("\n" * "="^70)
-    println("COMPREHENSIVE GRADIENT METHOD COMPARISON")
-    println("="^70)
-    println("Method                 | Time (s) | Loss       | ‖∇w‖      | ‖∇b‖")
-    println("-"^70)
-    @printf "Adjoint (current)      | %.4f   | %.6e | %.4e | %.4e\n" t1 loss1 norm(grad_w1) norm(grad_b1)
-    @printf "Finite Diff (ε=1e-5)   | %.4f   | %.6e | %.4e | %.4e\n" t2 loss2 norm(grad_w2) norm(grad_b2)
-    # @printf "Parameter Shift (π/2)  | %.4f   | %.6e | %.4e | %.4e\n" t3 loss3 norm(grad_w3) norm(grad_b3)
-    println("-"^70)
-    println("\nGradient Differences:")
-    println("Adjoint vs FiniteDiff:  ‖Δw‖ = $(norm(grad_w1 - grad_w2)), ‖Δb‖ = $(norm(grad_b1 - grad_b2))")
-    # println("Adjoint vs ParamShift:  ‖Δw‖ = $(norm(grad_w1 - grad_w3)), ‖Δb‖ = $(norm(grad_b1 - grad_b3))")
-    # println("FiniteDiff vs ParamShift: ‖Δw‖ = $(norm(grad_w2 - grad_w3)), ‖Δb‖ = $(norm(grad_b2 - grad_b3))")
-    println("="^70)
-    
-    return (
-        adjoint = (grad_w1, grad_b1, t1),
-        finite_diff = (grad_w2, grad_b2, t2),
-        # param_shift = (grad_w3, grad_b3, t3)
-    )
-end
