@@ -1,7 +1,7 @@
 
 using LIBSVM
 using Statistics
-using Printf
+using OptimizationOptimisers
 
 """
 Smooth hinge loss for SVM (from svc_loss_demo.jl)
@@ -24,7 +24,7 @@ function evaluate_kernel_svm(
     y_train::AbstractVector,
     X_val::AbstractMatrix,
     y_val::AbstractVector,
-    C::Float64
+    C::Float64 = 1.0
 )
     # Compute kernels
     K_train = TQK.evaluate(kernel, X_train)
@@ -53,10 +53,12 @@ using Cross validation.
 Returns: (best_C, best_score)
 """
 function cv_C_search(
-    config::ExperimentConfig{D, ReuploadingKernelHyperparameterSearchConfig},
+    config::ExperimentConfig{<:DataParams, <:ReuploadingKernelHyperparameterSearchConfig},
     X_train::AbstractMatrix,
     y_train::AbstractVector,
-) where D
+    weights::AbstractVector,
+    biases::AbstractVector,
+)
     
     kernel_config = config.kernel_config
     
@@ -70,20 +72,22 @@ function cv_C_search(
     svm_module = pyimport("sklearn.svm")
     model_selection = pyimport("sklearn.model_selection")
     np = pyimport("numpy")
+
+    feature_map = create_reuploading_feature_map(kernel_config, config.seed)
+    assign_params!(feature_map, weights, biases)
+    kernel = FidelityKernel(feature_map)
     
     # Compute kernels
     K = TQK.evaluate(kernel, X_train)
 
-    y_np = np.asarray(y)
+    y_np = np.asarray(y_train)
     K_np = np.asarray(K)
         
     for C in config.c_ranges
         # Create fresh feature map
-        feature_map = create_reuploading_feature_map(kernel_config, config.seed)
-        kernel = FidelityKernel(feature_map)
 
         clf = svm_module.SVC(kernel="precomputed", C=C)
-        scores = model_selection.cross_val_score(clf, K_np, y_np, cv=cv_folds)
+        scores = model_selection.cross_val_score(clf, K_np, y_np, cv=config.cv_folds)
 
         score = mean(pyconvert(Vector{Float64}, scores))
         @info "Evaluated" C=C cv_score=score
@@ -101,23 +105,24 @@ end
 
 
 function random_starts_search(
-    config::ExperimentConfig{D, ReuploadingKernelHyperparameterSearchConfig},
+    config::ExperimentConfig{<:DataParams, <:ReuploadingKernelHyperparameterSearchConfig},
     X_train::AbstractMatrix,
     y_train::AbstractVector,
     X_val::AbstractMatrix,
     y_val::AbstractVector;
     number_of_starts=6,
     learning_rate=0.01
-) where D
+) 
     
     kernel_config = config.kernel_config
+    iterations = kernel_config.iterations
     n_full = size(X_train, 1)
     
     # Phase 1: Coarse search (20% data, 20 iterations)
     n_phase1 = div(n_full, 5)
     phase1_results = []
     
-    @info "Phase 1: Coarse search on $n_phase1 samples, 20 iterations"
+    @info "Phase 1: Coarse search on $n_phase1 samples, $(iterations[1]) iterations"
     
     for n in number_of_starts
         # Create fresh feature map
@@ -134,7 +139,7 @@ function random_starts_search(
         
         train!(trainer, 
                optimizer=OptimizationOptimisers.AMSGrad(eta=learning_rate),
-               iterations=20,
+               iterations=kernel_config.iterations[1],
                callback=(s, l) -> nothing)
         
         # Evaluate
@@ -151,9 +156,9 @@ function random_starts_search(
     top3 = sort(phase1_results, by=x->x.val_acc, rev=true)[1:min(3, length(phase1_results))]
     phase2_results = []
     
-    @info "Phase 2: Refining top 3 on $n_phase2 samples, 50 iterations"
+    @info "Phase 2: Refining top 3 on $n_phase2 samples, $(iterations[2]) iterations"
     
-    for result in top3        
+    for (n, result) in enumerate(top3)
         # Continue feature map
         feature_map = result.fm
         kernel = FidelityKernel(feature_map)
@@ -169,13 +174,13 @@ function random_starts_search(
         losses = Float64[]
         train!(trainer,
                optimizer=OptimizationOptimisers.AMSGrad(eta=learning_rate),
-               iterations=20,
+               iterations=kernel_config.iterations[2],
                callback=(s, l) -> push!(losses, l))
         
         # Evaluate
         val_acc = evaluate_kernel_svm(kernel,
             X_train[1:n_phase2, :], y_train[1:n_phase2],
-            X_val, y_val, C)
+            X_val, y_val)
         
         push!(phase2_results, (fm = feature_map, val_acc=val_acc, kernel=kernel, losses=losses))
         @info "  Param Set $n: val_acc=$(round(val_acc*100, digits=1))%"
@@ -186,7 +191,7 @@ function random_starts_search(
     best_weights = best.fm.weights
     best_biases = best.fm.biases
     
-    @info "Phase 3: Final training with param set on $n_full samples, 30 more iterations"
+    @info "Phase 3: Final training with param set on $n_full samples, $(iterations[3]) more iterations"
     
     # Fresh feature map for final training
     feature_map = best.fm
@@ -199,7 +204,7 @@ function random_starts_search(
     final_losses = Float64[]
     train!(trainer,
            optimizer=OptimizationOptimisers.AMSGrad(eta=learning_rate),
-           iterations=kernel_config.max_iterations,
+           iterations=kernel_config.iterations[3],
            callback=(s, l) -> push!(final_losses, l))
     
     # Final evaluation
@@ -219,9 +224,9 @@ end
 Helper to create reuploading feature map from config.
 """
 function create_reuploading_feature_map(
-    kernel_config::ReuploadingKernelHyperparameterSearchConfig,
+    kernel_config::R ,
     seed::Int
-)
+)where R <:ReuploadingKernelHyperparameterSearchConfig
     ent_map = Dict(
         "linear" => linear,
         "alternating" => alternating,
@@ -247,11 +252,10 @@ Main entry point for training reuploading kernel with cross-validation.
 Splits data into train/val, runs multi-fidelity search, returns best hyperparameters.
 """
 function train_reuploading_kernel_with_cv(
+    config::ExperimentConfig{<:DataParams, <:ReuploadingKernelHyperparameterSearchConfig},
     X_train::AbstractMatrix,
-    y_train::AbstractVector,
-    config::ExperimentConfig{D, ReuploadingKernelHyperparameterSearchConfig}
-) where D
-    
+    y_train::AbstractVector
+)     
     # Split into train/val (80/20)
     n = length(y_train)
     n_val = div(n, 5)
@@ -268,11 +272,13 @@ function train_reuploading_kernel_with_cv(
         config, X_train_sub, y_train_sub, X_val, y_val
     )
 
-    best_C = cv_C_search(config, X_train, y_train)
+    best_C = cv_C_search(config, X_train, y_train, best_weights, best_biases)
     
     return ReuploadingKernelHyperparameters(
-        thetas=weights,
-        biases=biases,
+        nqubits=config.kernel_config.n_qubits,
+        nlayers=config.kernel_config.n_layers,
+        thetas=best_weights,
+        biases=best_biases,
         loss=losses,
         C=best_C
     ), history[:final_val_acc]
@@ -286,10 +292,10 @@ Simple training without CV (for when C is already known).
 function train_reuploading_kernel_simple(
     X_train::AbstractMatrix,
     y_train::AbstractVector,
-    config::ExperimentConfig{D, ReuploadingKernelHyperparameterSearchConfig};
+    config::ExperimentConfig{<:DataParams, <:ReuploadingKernelHyperparameterSearchConfig};
     C::Float64=1.0,
     learning_rate::Float64=0.01
-) where D
+) 
     
     kernel_config = config.kernel_config
     

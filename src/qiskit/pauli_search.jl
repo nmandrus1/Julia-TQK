@@ -2,39 +2,24 @@ using PythonCall
 using Random
 using Statistics
 
-"""
-    evaluate_pauli_config_kta(paulis, reps, entanglement, n_qubits, X, y)
 
-Evaluate a Pauli configuration using Kernel Target Alignment (KTA).
-Returns the KTA score (higher is better).
+
 """
-function evaluate_pauli_config_kta(paulis::Vector{String}, reps::Int, 
-                                    entanglement::String, n_qubits::Int,
-                                    X::AbstractMatrix, y::AbstractVector)
-    qiskit_lib = pyimport("qiskit.circuit.library")
-    qiskit_kernels = pyimport("qiskit_machine_learning.kernels")
-    
-    # X is column-major (n_features × n_samples), Qiskit needs row-major
-    X_row = X'
+    evaluate_kernel_cv(K, y, C, cv_folds)
+
+Performs cross-validation on an already computed kernel matrix.
+"""
+function evaluate_kernel_cv(K::AbstractMatrix, y::AbstractVector, C::Float64, cv_folds::Int)
+    svm_module = pyimport("sklearn.svm")
+    model_selection = pyimport("sklearn.model_selection")
+    numpy = pyimport("numpy")
     
     try
-        feature_map = qiskit_lib.PauliFeatureMap(
-            feature_dimension=size(X, 1),
-            reps=reps,
-            entanglement=entanglement,
-            paulis=pylist(paulis)
-        )
-        
-        kernel = qiskit_kernels.FidelityStatevectorKernel(feature_map=feature_map)
-        K = pyconvert(Matrix{Float64}, kernel.evaluate(x_vec=X_row))
-        
-        # Compute KTA
-        y_outer = y * y'
-        kta = sum(K .* y_outer) / (sqrt(sum(K.^2)) * sqrt(sum(y_outer.^2)))
-        
-        return kta
+        clf = svm_module.SVC(kernel="precomputed", C=C)
+        scores = model_selection.cross_val_score(clf, numpy.asarray(K), numpy.asarray(y), cv=cv_folds)
+        return mean(pyconvert(Vector{Float64}, scores))
     catch e
-        @warn "Failed to evaluate Pauli config" paulis exception=e
+        @warn "CV failed for a configuration" exception=e
         return -Inf
     end
 end
@@ -45,47 +30,109 @@ end
 Evaluate a Pauli configuration using cross-validation with precomputed kernel SVM.
 Returns mean CV accuracy.
 """
-function evaluate_pauli_config_cv(paulis::Vector{String}, reps::Int,
-                                   entanglement::String, n_qubits::Int,
-                                   X::AbstractMatrix, y::AbstractVector,
-                                   C::Float64, cv_folds::Int)
-    qiskit_lib = pyimport("qiskit.circuit.library")
-    qiskit_kernels = pyimport("qiskit_machine_learning.kernels")
-    svm_module = pyimport("sklearn.svm")
-    model_selection = pyimport("sklearn.model_selection")
-    numpy = pyimport("numpy")
+# function evaluate_pauli_config_cv(paulis::Vector{String}, reps::Int,
+#                                    entanglement::String, n_qubits::Int,
+#                                    X::AbstractMatrix, y::AbstractVector,
+#                                    C::Float64, cv_folds::Int)
+#     qiskit_lib = pyimport("qiskit.circuit.library")
+#     qiskit_kernels = pyimport("qiskit_machine_learning.kernels")
+#     svm_module = pyimport("sklearn.svm")
+#     model_selection = pyimport("sklearn.model_selection")
+#     numpy = pyimport("numpy")
     
-    X_row = X'
+#     X_row = X'
     
-    try
-        feature_map = qiskit_lib.PauliFeatureMap(
-            feature_dimension=size(X, 1),
-            reps=reps,
-            entanglement=entanglement,
-            paulis=pylist(paulis)
-        )
+#     try
+#         feature_map = qiskit_lib.PauliFeatureMap(
+#             feature_dimension=size(X, 1),
+#             reps=reps,
+#             entanglement=entanglement,
+#             paulis=pylist(paulis)
+#         )
        
-        kernel = qiskit_kernels.FidelityStatevectorKernel(feature_map=feature_map)
-        K_py = kernel.evaluate(x_vec=X_row)
-        K_np = numpy.asarray(K_py)
-        y_np = numpy.asarray(y)
+#         kernel = qiskit_kernels.FidelityStatevectorKernel(feature_map=feature_map)
+#         K_py = kernel.evaluate(x_vec=X_row)
+#         K_np = numpy.asarray(K_py)
+#         y_np = numpy.asarray(y)
        
-        # Cross-validation with precomputed kernel
-        clf = svm_module.SVC(kernel="precomputed", C=C)
-        scores = model_selection.cross_val_score(clf, K_np, y_np, cv=cv_folds)
+#         # Cross-validation with precomputed kernel
+#         clf = svm_module.SVC(kernel="precomputed", C=C)
+#         scores = model_selection.cross_val_score(clf, K_np, y_np, cv=cv_folds)
         
-        return mean(pyconvert(Vector{Float64}, scores))
-    catch e
-        @warn "Failed CV for Pauli config" paulis exception=e
-        return -Inf
+#         return mean(pyconvert(Vector{Float64}, scores))
+#     catch e
+#         @warn "Failed CV for Pauli config" paulis exception=e
+#         return -Inf
+#     end
+# end
+
+# --- MULTI-STAGE SEARCH FUNCTIONS ---
+
+"""
+    find_best_proxy_C(config, X_sub, y_sub) -> Float64
+
+STAGE 1: Search for a single, good proxy C value on a subset of data.
+"""
+function find_best_proxy_C(config::ExperimentConfig{<:Any, <:PauliKernelHyperparameterSearchConfig}, X_sub::AbstractMatrix, y_sub::AbstractVector)
+    kernel_config = config.kernel_config
+    scores_by_C = Dict(C => [] for C in config.c_ranges)
+    
+    @info "Starting Stage 1: Finding proxy C on a subset of data" n_samples=size(X_sub, 2)
+    
+    # Run a small number of random Pauli searches
+    for i in 1:10 # A small, fixed number of iterations is sufficient
+        hyperparams = PauliKernelHyperparameters(
+            paulis = generate_constrained_pauli_set(kernel_config.search_constraints, seed=config.seed + i),
+            reps = rand(kernel_config.reps),
+            entanglement = rand(kernel_config.entanglement),
+            C=1.0
+        )
+        
+        K_sub = compute_pauli_kernel_matrix(hyperparams, X_sub)
+        
+        for C in config.c_ranges
+            score = evaluate_kernel_cv(K_sub, y_sub, C, config.cv_folds)
+            push!(scores_by_C[C], score)
+        end
     end
+    
+    # Average the scores for each C and pick the best
+    avg_scores = Dict(C => mean(filter(!isinf, scores)) for (C, scores) in scores_by_C)
+    proxy_C = findmax(avg_scores)[2]
+    
+    @info "Stage 1 complete. Best proxy C found." proxy_C=proxy_C avg_scores=avg_scores
+    return proxy_C
 end
+
+
+"""
+    tune_final_C(best_pauli_config, K_full, y_train, config) -> (Float64, Float64)
+
+STAGE 3: Fine-tune C for the best kernel using a cached kernel matrix.
+"""
+function tune_final_C(best_pauli_config, K_full::AbstractMatrix, y_train::AbstractVector, config::ExperimentConfig)
+    @info "Starting Stage 3: Fine-tuning C for the best kernel"
+    
+    best_C = config.c_ranges[1]
+    best_score = -Inf
+    
+    for C in config.c_ranges
+        score = evaluate_kernel_cv(K_full, y_train, C, config.cv_folds)
+        if score > best_score
+            best_score = score
+            best_C = C
+        end
+    end
+    
+    @info "Stage 3 complete. Final C chosen." best_C=best_C final_score=best_score
+    return best_C, best_score
+end
+
 
 """
     search_pauli_hyperparameters(config, X_train, y_train)
 
-Search for best Pauli kernel hyperparameters using random search with CV.
-Returns (best_hyperparameters, best_score).
+The main three-stage search orchestrator.
 """
 function search_pauli_hyperparameters(
     config::ExperimentConfig{D, K},
@@ -96,93 +143,53 @@ function search_pauli_hyperparameters(
     kernel_config = config.kernel_config
     Random.seed!(config.seed)
     
-    best_score = -Inf
-    best_hyperparams = nothing
-    all_results = []
+    # --- STAGE 1: Find Proxy C ---
+    subset_size = min(400, size(X_train, 1)) # Use up to 400 samples
+    X_sub = X_train[1:subset_size, :]
+    y_sub = y_train[1:subset_size]
+    proxy_C = find_best_proxy_C(config, X_sub, y_sub)
     
-    @info "Starting Pauli kernel search with CV" n_iterations=kernel_config.n_search_iterations
-    
+    # --- STAGE 2: Main Pauli Search with Proxy C ---
+    @info "Starting Stage 2: Main Pauli search with fixed proxy C" proxy_C=proxy_C
+    best_score_proxy = -Inf
+    best_pauli_config = nothing
+
     for iter in 1:kernel_config.n_search_iterations
-        # Generate random configuration
-        paulis = generate_constrained_pauli_set(
-            kernel_config.search_constraints,
-            seed=config.seed + iter
+        hyperparams = PauliKernelHyperparameters(
+            paulis = generate_constrained_pauli_set(kernel_config.search_constraints, seed=config.seed + iter),
+            reps = rand(kernel_config.reps),
+            entanglement = rand(kernel_config.entanglement),
+            C=proxy_C
         )
-        reps = rand(kernel_config.reps)
-        entanglement = rand(kernel_config.entanglement)
         
-        # Try each C value and pick best
-        best_C_score = -Inf
-        best_C = config.c_ranges[1]
+        K_full = compute_pauli_kernel_matrix(hyperparams, X_train)
+        score = evaluate_kernel_cv(K_full, y_train, proxy_C, config.cv_folds)
         
-        for C in config.c_ranges
-            score = evaluate_pauli_config_cv(
-                paulis, reps, entanglement,
-                kernel_config.n_qubits,
-                X_train, y_train, C, config.cv_folds
-            )
-            
-            if score > best_C_score
-                best_C_score = score
-                best_C = C
-            end
+        if score > best_score_proxy
+            best_score_proxy = score
+            best_pauli_config = (paulis=hyperparams.paulis, reps=hyperparams.reps, entanglement=hyperparams.entanglement, K_cache=K_full)
         end
-        
-        push!(all_results, (paulis=paulis, reps=reps, 
-                           entanglement=entanglement, C=best_C, score=best_C_score))
-        
-        if best_C_score > best_score
-            best_score = best_C_score
-            best_hyperparams = PauliKernelHyperparameters(
-                n_qubits=kernel_config.n_qubits,
-                paulis=paulis,
-                reps=reps,
-                entanglement=entanglement,
-                C=best_C,
-                seed=config.seed
-            )
-        end
-        
+
         if iter % 5 == 0
-            @info "Search progress" iteration=iter best_score=best_score
+            @info "Search progress" iteration=iter best_score_with_proxy_C=best_score_proxy
         end
     end
     
-    @info "Search complete" best_score=best_score best_paulis=best_hyperparams.paulis best_C=best_hyperparams.C
+    @info "Stage 2 complete. Best Pauli configuration found." best_config=best_pauli_config
     
-    return best_hyperparams, best_score
-end
+    # --- STAGE 3: Fine-Tune C for the Best Kernel ---
+    final_C, final_score = tune_final_C(best_pauli_config, best_pauli_config.K_cache, y_train, config)
+    
+    # --- Finalize and Return ---
+    final_hyperparams = PauliKernelHyperparameters(
+        n_qubits=kernel_config.n_qubits,
+        paulis=best_pauli_config.paulis,
+        reps=best_pauli_config.reps,
+        entanglement=best_pauli_config.entanglement,
+        C=final_C,
+        seed=config.seed
+    )
 
-"""
-    tune_svm_C(hyperparams, X, y, C_range, cv_folds)
-
-Tune the SVM C parameter for given kernel hyperparameters.
-"""
-function tune_svm_C(hyperparams::PauliKernelHyperparameters,
-                    X::AbstractMatrix, y::AbstractVector,
-                    C_range::Vector{Float64}, cv_folds::Int)
-    
-    best_C = C_range[1]
-    best_score = -Inf
-    
-    @info "Tuning C parameter" C_range=C_range
-    
-    for C in C_range
-        score = evaluate_pauli_config_cv(
-            hyperparams.paulis,
-            hyperparams.reps,
-            hyperparams.entanglement,
-            hyperparams.n_qubits,
-            X, y, C, cv_folds
-        )
-        
-        if score > best_score
-            best_score = score
-            best_C = C
-        end
-    end
-    
-    @info "C tuning complete" best_C=best_C best_score=best_score
-    
-    return best_C
+    @info "Pauli search fully complete!"
+    return final_hyperparams, final_score
 end

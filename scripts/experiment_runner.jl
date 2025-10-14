@@ -1,5 +1,6 @@
-
 using DrWatson
+@quickactivate "TQK"
+
 using DataFrames
 using JLD2
 using Dates
@@ -7,6 +8,7 @@ using Statistics
 using PythonCall
 using LIBSVM
 using Printf
+using Distances
 
 # ============================================================================
 # KERNEL NAMING & IDENTIFICATION
@@ -91,6 +93,10 @@ end
 """
 Add experiment to registry.
 """
+
+"""
+Add experiment to registry.
+"""
 function register_experiment!(registry::DataFrame, exp_config::ExperimentConfig)
     exp_id = exp_config.experiment_name
     
@@ -111,7 +117,8 @@ function register_experiment!(registry::DataFrame, exp_config::ExperimentConfig)
         :created_at => now(),
         :completed_at => missing,
         :dataset_type => string(exp_config.data_config.data_params.dataset_type),
-        :dataset_params => exp_config.data_config.data_params,
+        # Convert the struct to a Dict before pushing
+        :dataset_params => DrWatson.struct2dict(exp_config.data_config.data_params),
         :n_samples => exp_config.data_config.n_samples,
         :n_features => exp_config.data_config.n_features,
         :data_seed => exp_config.data_config.seed,
@@ -119,7 +126,7 @@ function register_experiment!(registry::DataFrame, exp_config::ExperimentConfig)
         :learning_curve_sizes => exp_config.learning_curve_sizes,
         :data_path => "",  # Will be filled after data generation
         :result_path => result_path
-    ))
+    ), cols=:union)
     
     save_registry!(registry)
     return exp_id
@@ -174,7 +181,7 @@ end
 Generate experiment grid with many reuploading configs.
 """
 function generate_experiment_grid(;
-    dataset_configs::Vector{DataConfig},
+    dataset_configs::Vector{<:DataConfig},
     reuploading_grid::Dict,
     test_rbf::Bool=true,
     test_pauli::Bool=true
@@ -183,7 +190,7 @@ function generate_experiment_grid(;
     
     for data_config in dataset_configs
         # Expand reuploading grid
-        reup_configs = ReuploadingKernelHyperparameterSearchConfig[]
+        reup_configs = KernelHyperparameterSearchConfig[]
         
         if !isempty(reuploading_grid)
             reup_params = dict_list(reuploading_grid)
@@ -194,8 +201,6 @@ function generate_experiment_grid(;
                     n_features = data_config.n_features,
                     n_layers = params[:n_layers],
                     entanglement = params[:entanglement],
-                    optimizer = params[:optimizer],
-                    max_iterations = params[:max_iterations],
                     seed = data_config.seed
                 ))
             end
@@ -236,148 +241,6 @@ end
 # ============================================================================
 # HYPERPARAMETER SEARCH
 # ============================================================================
-
-"""
-Search RBF hyperparameters using cross-validation.
-"""
-function search_rbf_hyperparameters(
-    X_train::AbstractMatrix, 
-    y_train::AbstractVector,
-    config::ExperimentConfig
-)
-    gamma_range = [0.01, 0.1, 1.0, 10.0, 100.0]
-    C_range = [0.1, 1.0, 10.0, 100.0]
-    
-    best_score = -Inf
-    best_params = nothing
-    
-    for gamma in gamma_range, C in C_range
-        # Compute RBF kernel
-        D = sum((X_train[i, :] .- X_train[j, :]').^2 for i in 1:size(X_train,1), j in 1:size(X_train,1))
-        K = exp.(-gamma .* D)
-        
-        # 3-fold CV
-        try
-            model = svmtrain(K, y_train, kernel=Kernel.Precomputed, cost=C, verbose=false)
-            # Simple holdout as proxy
-            pred = svmpredict(model, K)[1]
-            score = mean(pred .== y_train)
-            
-            if score > best_score
-                best_score = score
-                best_params = RBFHyperparameters(gamma=gamma, C=C, seed=config.seed)
-            end
-        catch e
-            continue
-        end
-    end
-    
-    return best_params, best_score
-end
-
-"""
-Search Pauli hyperparameters.
-"""
-function search_pauli_hyperparameters(
-    X_train::AbstractMatrix,
-    y_train::AbstractVector, 
-    config::ExperimentConfig{D, PauliKernelHyperparameterSearchConfig}
-) where D
-    kernel_config = config.kernel_config
-    
-    qiskit_lib = pyimport("qiskit.circuit.library")
-    qiskit_kernels = pyimport("qiskit_machine_learning.kernels")
-    
-    best_score = -Inf
-    best_params = nothing
-    
-    for _ in 1:kernel_config.n_search_iterations
-        # Random Pauli configuration
-        paulis = generate_constrained_pauli_set(kernel_config.search_constraints)
-        reps = rand(kernel_config.reps)
-        entanglement = rand(kernel_config.entanglement)
-        
-        feature_map = qiskit_lib.PauliFeatureMap(
-            feature_dimension=size(X_train, 2),
-            reps=reps,
-            entanglement=entanglement,
-            paulis=pylist(paulis)
-        )
-        
-        kernel = qiskit_kernels.FidelityStatevectorKernel(feature_map=feature_map)
-        K = pyconvert(Matrix{Float64}, kernel.evaluate(x_vec=X_train))
-        
-        for C in config.c_ranges
-            try
-                model = svmtrain(K, y_train, kernel=Kernel.Precomputed, cost=C, verbose=false)
-                pred = svmpredict(model, K)[1]
-                score = mean(pred .== y_train)
-                
-                if score > best_score
-                    best_score = score
-                    best_params = PauliKernelHyperparameters(
-                        n_qubits=kernel_config.n_qubits,
-                        reps=reps,
-                        entanglement=entanglement,
-                        paulis=paulis,
-                        C=C,
-                        seed=config.seed
-                    )
-                end
-            catch e
-                continue
-            end
-        end
-    end
-    
-    return best_params, best_score
-end
-
-"""
-Train reuploading kernel.
-"""
-function train_reuploading_kernel(
-    X_train::AbstractMatrix,
-    y_train::AbstractVector,
-    config::ExperimentConfig{D, ReuploadingKernelHyperparameterSearchConfig}
-) where D
-    kernel_config = config.kernel_config
-    
-    # Create feature map
-    ent_map = Dict("linear"=>linear, "alternating"=>alternating, "all_to_all"=>all_to_all)
-    
-    feature_map = ReuploadingCircuit(
-        kernel_config.n_qubits,
-        kernel_config.n_features,
-        kernel_config.n_layers,
-        ent_map[kernel_config.entanglement]
-    )
-    
-    assign_random_params!(feature_map, seed=config.seed)
-    kernel = FidelityKernel(feature_map)
-    
-    # Train
-    loss_fn = K -> kernel_alignment_loss(K, y_train)
-    trainer = QuantumKernelTrainer(kernel, loss_fn, X_train, y_train)
-    
-    optimizer = kernel_config.optimizer == "LBFGS" ? LBFGS() : error("Unknown optimizer")
-    
-    losses = Float64[]
-    sol = train!(trainer, 
-                optimizer=optimizer,
-                iterations=kernel_config.max_iterations,
-                callback=(state, loss) -> push!(losses, loss))
-    
-    weights, biases = get_params(feature_map)
-    
-    return ReuploadingKernelHyperparameters(
-        thetas=weights,
-        biases=biases,
-        loss=losses,
-        C=1.0  # Fixed for now
-    ), sol.minimum
-end
-
 """
 Dispatch hyperparameter search based on kernel type.
 """
@@ -387,11 +250,11 @@ function search_hyperparameters(
     config::ExperimentConfig
 )
     if config.kernel_config isa RBFKernelHyperparameterSearchConfig
-        return search_rbf_hyperparameters(X_train, y_train, config)
+        return search_rbf_hyperparameters(config, X_train, y_train)
     elseif config.kernel_config isa PauliKernelHyperparameterSearchConfig
-        return search_pauli_hyperparameters(X_train, y_train, config)
+        return search_pauli_hyperparameters(config, X_train, y_train)
     elseif config.kernel_config isa ReuploadingKernelHyperparameterSearchConfig
-        return train_reuploading_kernel(X_train, y_train, config)
+        return train_reuploading_kernel_with_cv(config, X_train, y_train)
     end
 end
 
@@ -412,40 +275,35 @@ function evaluate_at_size(
 )
     X_sub = X_train[1:n_samples, :]
     y_sub = y_train[1:n_samples]
+
+    local K_train, K_test, C
     
     # Compute kernel
     if hyperparams isa RBFHyperparameters
-        D_train = sum((X_sub[i, :] .- X_sub[j, :]').^2 for i in 1:n_samples, j in 1:n_samples)
-        K_train = exp.(-hyperparams.gamma .* D_train)
+
+        # 1. Calculate pairwise squared Euclidean distances.
+        #    NOTE: Distances.jl expects features in columns, so we transpose (').
+        D_train_sq = pairwise(SqEuclidean(), X_sub', dims=2)
+        K_train = exp.(-hyperparams.gamma .* D_train_sq)
+        @show size(K_train)
         
-        D_test = sum((X_test[i, :] .- X_sub[j, :]').^2 for i in 1:size(X_test,1), j in 1:n_samples)
-        K_test = exp.(-hyperparams.gamma .* D_test)
-        
+        D_test_sq = pairwise(SqEuclidean(), X_test', X_sub', dims=2)
+        K_test = exp.(-hyperparams.gamma .* D_test_sq)
+
         C = hyperparams.C
         
     elseif hyperparams isa PauliKernelHyperparameters
-        qiskit_lib = pyimport("qiskit.circuit.library")
-        qiskit_kernels = pyimport("qiskit_machine_learning.kernels")
-        
-        feature_map = qiskit_lib.PauliFeatureMap(
-            feature_dimension=size(X_train, 2),
-            reps=hyperparams.reps,
-            entanglement=hyperparams.entanglement,
-            paulis=pylist(hyperparams.paulis)
-        )
-        
-        kernel = qiskit_kernels.FidelityStatevectorKernel(feature_map=feature_map)
-        K_train = pyconvert(Matrix{Float64}, kernel.evaluate(x_vec=X_sub))
-        K_test = pyconvert(Matrix{Float64}, kernel.evaluate(x_vec=X_test, y_vec=X_sub))
-        
+        K_train = compute_pauli_kernel_matrix(hyperparams, X_sub)
+        K_test = compute_pauli_kernel_matrix(hyperparams, X_test, X_sub)       
         C = hyperparams.C
         
     elseif hyperparams isa ReuploadingKernelHyperparameters
         ent_map = Dict("linear"=>linear, "alternating"=>alternating, "all_to_all"=>all_to_all)
         
         # Reconstruct feature map with trained params
-        n_qubits = length(hyperparams.thetas) ÷ (size(X_train, 2) ÷ 3)  # Rough estimate
-        feature_map = ReuploadingCircuit(n_qubits, size(X_train, 2), length(hyperparams.thetas) ÷ (n_qubits * size(X_train, 2) ÷ 3), linear)
+        nqubits = hyperparams.nqubits
+        nlayers = hyperparams.nlayers
+        feature_map = ReuploadingCircuit(nqubits, size(X_train, 2), nlayers , linear)
         assign_params!(feature_map, hyperparams.thetas, hyperparams.biases)
         
         kernel = FidelityKernel(feature_map)
@@ -459,7 +317,7 @@ function evaluate_at_size(
     model = svmtrain(K_train, y_sub, kernel=Kernel.Precomputed, cost=C, verbose=false)
     
     train_pred = svmpredict(model, K_train)[1]
-    test_pred = svmpredict(model, K_test)[1]
+    test_pred = svmpredict(model, K_test')[1]
     
     return Dict(
         :train_acc => mean(train_pred .== y_sub),
@@ -476,10 +334,10 @@ function run_learning_curve(
     data::Dict,
     sizes::Vector{Int}
 )
-    X_train = permutedims(data[:X_train])  # To row-major
-    X_test = permutedims(data[:X_test])
-    y_train = data[:y_train]
-    y_test = data[:y_test]
+    X_train = permutedims(data["X_train"])  # To row-major
+    X_test = permutedims(data["X_test"])
+    y_train = data["y_train"]
+    y_test = data["y_test"]
     
     results = Dict{Int, Dict}()
     
@@ -521,8 +379,8 @@ function run_experiment!(registry::DataFrame, exp_config::ExperimentConfig)
         data, data_path = prepare_data!(exp_config)
         update_experiment!(registry, exp_id, data_path=data_path)
         
-        X_train = permutedims(data[:X_train])
-        y_train = data[:y_train]
+        X_train = permutedims(data["X_train"])
+        y_train = Vector(data["y_train"])
         
         # 2. Hyperparameter search (cached)
         @info "Searching hyperparameters for $kernel_id..."
@@ -662,15 +520,13 @@ function quick_test()
         :n_qubits => [2, 4],
         :n_layers => [2],
         :entanglement => ["linear"],
-        :optimizer => ["LBFGS"],
-        :max_iterations => [50]
     )
     
     experiments = generate_experiment_grid(
         dataset_configs=[data_config],
         reuploading_grid=reup_grid,
         test_rbf=true,
-        test_pauli=false
+        test_pauli=true
     )
     
     run_experiments!(experiments)

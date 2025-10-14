@@ -39,8 +39,8 @@ function produce_data(config::DataConfig)
     pca_model = fit(PCA , X_train_scaled; maxoutdim=config.n_features)
 
     # Transform both sets
-    X_train = predict(pca_model, X_train_scaled)
-    X_test = predict(pca_model, X_test_scaled)
+    X_train = MultivariateStats.predict(pca_model, X_train_scaled)
+    X_test = MultivariateStats.predict(pca_model, X_test_scaled)
 
     return @dict X_train y_train X_test y_test config
 end

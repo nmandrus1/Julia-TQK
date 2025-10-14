@@ -25,8 +25,8 @@ include("experiment_configuration.jl")
 
 include("qiskit/qiskit_interface.jl")
 include("qiskit/pauli_search.jl")
-
 include("rbf/rbf_search.jl")
+include("reupload_hyperparam_search.jl")
 
 # data generation
 include("data_generation/quantum_data.jl")
@@ -85,5 +85,7 @@ export search_pauli_hyperparameters, tune_svm_C
 export search_rbf_hyperparameters 
 export evaluate_pauli_config_kta, evaluate_pauli_config_cv       
 export evaluate_rbf_kta, evaluate_rbf_cv, tune_rbf_C, pairwise_distances_colmajor
+
+export train_reuploading_kernel_with_cv
 
 end

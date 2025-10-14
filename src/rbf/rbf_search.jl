@@ -20,21 +20,7 @@ function pairwise_distances_colmajor(X::AbstractMatrix)
     return D
 end
 
-"""
-    evaluate_rbf_kta(gamma, X, y)
 
-Evaluate RBF kernel with given gamma using Kernel Target Alignment.
-"""
-function evaluate_rbf_kta(gamma::Float64, X::AbstractMatrix, y::AbstractVector)
-    D = pairwise_distances_colmajor(X)
-    K = exp.(-gamma .* D)
-    
-    # KTA
-    y_outer = y * y'
-    kta = sum(K .* y_outer) / (sqrt(sum(K.^2)) * sqrt(sum(y_outer.^2)))
-    
-    return kta
-end
 
 """
     evaluate_rbf_cv(gamma, X, y, C, cv_folds)
@@ -47,14 +33,17 @@ function evaluate_rbf_cv(gamma::Float64, X::AbstractMatrix, y::AbstractVector,
     model_selection = pyimport("sklearn.model_selection")
     np = pyimport("numpy")
     
-    D = pairwise_distances_colmajor(X)
-    K = exp.(-gamma .* D)
-
-    y_np = np.asarray(y)
-    K_np = np.asarray(K)
+    # X is expected to be (n_samples, n_features), which is what scikit-learn wants.
+    # Let scikit-learn compute the RBF kernel directly instead of pre-computing in Julia.
     
-    clf = svm_module.SVC(kernel="precomputed", C=C)
-    scores = model_selection.cross_val_score(clf, K_np, y_np, cv=cv_folds)
+    # 1. Create an SVC classifier that knows how to compute the RBF kernel itself.
+    clf = svm_module.SVC(kernel="rbf", gamma=gamma, C=C)
+    
+    # 2. Pass the feature matrix X directly, not the precomputed kernel K.
+    X_np = np.asarray(X)
+    y_np = np.asarray(y)
+    
+    scores = model_selection.cross_val_score(clf, X_np, y_np, cv=cv_folds)
     
     return mean(pyconvert(Vector{Float64}, scores))
 end
