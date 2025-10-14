@@ -15,6 +15,11 @@ struct PreallocatedWorkspace <: AbstractFidelityWorkspace
     statevec_pool::Vector{ArrayReg}
     grad_buffer::Vector{Float64}
     K_cache::Matrix{Float64}  # Pre-allocated kernel matrix
+    # for plus and minus computations of weights
+    w_buffer::Vector{Float64}
+    b_buffer::Vector{Float64}
+    S_matrix::Matrix{ComplexF64}
+    K_complex::Matrix{ComplexF64}
 end
 
 """
@@ -22,6 +27,7 @@ end
 
 Create workspace sized to memory budget.
 """
+
 function create_preallocated_workspace(
     feature_map::AbstractQuantumFeatureMap,
     max_samples::Int,
@@ -30,11 +36,31 @@ function create_preallocated_workspace(
     num_qubits = n_qubits(feature_map)
     num_params = n_params(feature_map)
     
-    statevec_pool = [zero_state(ComplexF64, num_qubits) for _ in 1:max_samples]
-    grad_buffer = zeros(Float64, 2 * num_params)
-    K_cache = zeros(Float64, K_dims)
+    # --- THIS IS THE CORRECTED PART ---
+    # 1. Allocate the S_matrix directly. It will be our primary storage.
+    S_matrix = zeros(ComplexF64, 2^num_qubits, max_samples)
+
+    # 2. Create the statevec_pool as a vector of ArrayRegs that are 
+    #    VIEWS into the columns of S_matrix. This is highly memory-efficient
+    #    and ensures data consistency.
+    statevec_pool = [ArrayReg(@view S_matrix[:, i]) for i in 1:max_samples]
     
-    return PreallocatedWorkspace(statevec_pool, grad_buffer, K_cache)
+    # ... (rest of the allocations are the same) ...
+    grad_buffer = zeros(Float64, 2 * num_params)
+    w_buffer = zeros(Float64, num_params)
+    b_buffer = zeros(Float64, num_params)
+    K_cache = zeros(Float64, K_dims)
+    K_complex = zeros(ComplexF64, K_dims)
+    
+    return PreallocatedWorkspace(
+        statevec_pool,
+        grad_buffer,
+        K_cache,
+        w_buffer,
+        b_buffer,
+        S_matrix,
+        K_complex
+    )
 end
 
 function get_statevectors(ws::PreallocatedWorkspace)

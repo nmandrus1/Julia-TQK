@@ -126,8 +126,8 @@ end
     
     # Training configuration
     optimizer::String #"Adam" or "LBFGS"
-    max_iterations::Int = 100
-    
+    iterations::Int = [20, 20, 30]
+        
     # Optimization parameter grid search
     learning_rates::Vector{Float64} = [0.01, 0.05, 0.1, 0.5, 1]
     
@@ -317,65 +317,65 @@ function generate_constrained_pauli_set(
     return result
 end
 
-"""
-Search for the best Pauli kernel configuration
-"""
-function search_best_pauli_kernel(
-    config::PauliKernelHyperparameterSearchConfig,
-    X_train::Matrix{Float64},
-    y_train::Vector{Float64}
-)
-    @info "Starting Pauli kernel search" config.search_strategy config.n_search_iterations
+# """
+# Search for the best Pauli kernel configuration
+# """
+# function search_best_pauli_kernel(
+#     config::PauliKernelHyperparameterSearchConfig,
+#     X_train::Matrix{Float64},
+#     y_train::Vector{Float64}
+# )
+#     @info "Starting Pauli kernel search" config.search_strategy config.n_search_iterations
     
-    # Use subset for cross-validation
-    n_cv = min(config.cv_samples, size(X_train, 1))
-    cv_indices = randperm(size(X_train, 1))[1:n_cv]
-    X_cv = X_train[cv_indices, :]
-    y_cv = y_train[cv_indices]
+#     # Use subset for cross-validation
+#     n_cv = min(config.cv_samples, size(X_train, 1))
+#     cv_indices = randperm(size(X_train, 1))[1:n_cv]
+#     X_cv = X_train[cv_indices, :]
+#     y_cv = y_train[cv_indices]
     
-    best_score = -Inf
-    best_paulis = nothing
-    all_results = []
+#     best_score = -Inf
+#     best_paulis = nothing
+#     all_results = []
     
-    Random.seed!(config.seed)
+#     Random.seed!(config.seed)
     
-    for i in 1:config.n_search_iterations
-        # Generate candidate Pauli set
-        paulis = generate_constrained_pauli_set(
-            config.search_constraints,
-            seed=config.seed + i
-        )
+#     for i in 1:config.n_search_iterations
+#         # Generate candidate Pauli set
+#         paulis = generate_constrained_pauli_set(
+#             config.search_constraints,
+#             seed=config.seed + i
+#         )
         
-        try
-            # Evaluate this configuration
-            score = evaluate_pauli_kernel(
-                paulis,
-                config.n_qubits,
-                config.reps,
-                config.entanglement,
-                X_cv,
-                y_cv,
-                config.cv_folds
-            )
+#         try
+#             # Evaluate this configuration
+#             score = evaluate_pauli_kernel(
+#                 paulis,
+#                 config.n_qubits,
+#                 config.reps,
+#                 config.entanglement,
+#                 X_cv,
+#                 y_cv,
+#                 config.cv_folds
+#             )
             
-            @info "Iteration $i/$(config.n_search_iterations)" paulis score
+#             @info "Iteration $i/$(config.n_search_iterations)" paulis score
             
-            push!(all_results, (paulis=paulis, score=score))
+#             push!(all_results, (paulis=paulis, score=score))
             
-            if score > best_score
-                best_score = score
-                best_paulis = paulis
-            end
-        catch e
-            @warn "Iteration $i failed" exception=e
-            push!(all_results, (paulis=paulis, score=-Inf))
-        end
-    end
+#             if score > best_score
+#                 best_score = score
+#                 best_paulis = paulis
+#             end
+#         catch e
+#             @warn "Iteration $i failed" exception=e
+#             push!(all_results, (paulis=paulis, score=-Inf))
+#         end
+#     end
     
-    @info "Search complete" best_score best_paulis
+#     @info "Search complete" best_score best_paulis
     
-    return best_paulis, best_score, all_results
-end
+#     return best_paulis, best_score, all_results
+# end
 
 """
 Produce a Pauli feature map kernel (with optional search)
@@ -448,7 +448,7 @@ end
     learning_curve_sizes::Vector{Int} = collect(100:100:data_config.n_samples)
 
     # ranges for the value of C in SVM computation
-    c_ranges::Vector{Float64} = [0.1, 1.0, 10.0, 100.0]
+    c_ranges::Vector{Float64} = [0.01, 0.1, 1.0, 10.0, 100.0]
     cv_folds::Int = 5
     
     # Experiment tracking

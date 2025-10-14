@@ -40,21 +40,11 @@ function QuantumKernelTrainer(
     memory_budget_gb::Float64 = 4.0,
 )
     # Create workspace if not provided
-
-    if nthreads() > 1
-        workspace = create_thread_aware_workspace(
-            kernel.feature_map, 
-            size(X, 1), 
-            (size(X, 1), size(X, 1))
-        )
-    else 
-        workspace = create_preallocated_workspace(
-            kernel.feature_map, 
-            size(X, 1), 
-            (size(X, 1), size(X, 1))
-        )
-    end
-    
+    workspace = create_preallocated_workspace(
+        kernel.feature_map, 
+        size(X, 1), 
+        (size(X, 1), size(X, 1))
+    )
 
     return QuantumKernelTrainer(kernel, loss_fn, X, y, workspace, zeros(size(X, 1), size(X, 1)))
 end

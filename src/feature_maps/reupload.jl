@@ -161,10 +161,11 @@ using the weights and biases stored in the circuit
 function compute_angles!(pc::ReuploadingCircuit, x::AbstractVector)   
     @argcheck length(x) == pc.n_features
 
-    for i in eachindex(pc.weights)
-        feature_idx = pc.gate_features[i]
-        pc.angles[i] = pc.weights[i] * x[feature_idx] + pc.biases[i]
-    end
+    pc.angles .= pc.weights .* x[pc.gate_features] .+ pc.biases
+    # for i in eachindex(pc.weights)
+    #     feature_idx = pc.gate_features[i]
+    #     pc.angles[i] = pc.weights[i] * x[feature_idx] + pc.biases[i]
+    # end
 end
 
 

@@ -130,13 +130,13 @@ end
 
 
 
-function smooth_hinge_loss(K::Matrix, y::AbstractVector; C=1.0, λ=0.01)
+function smooth_hinge_loss(K::Matrix, Y_outer::AbstractMatrix; C=1.0, λ=0.01)
     # Approximate decision function from kernel
     # For kernel methods: f(x) = Σⱼ αⱼyⱼK(xⱼ,x)
     # Simplified version: use kernel-based scores
     # K_normalized = K ./ (norm(K) + 1e-8)  # Normalize to prevent explosion
-    Y = y* y'
-    margins = Y .* K   
+    # Y = y* y'
+    margins = Y_outer .* K   
     
     # Smooth hinge loss using squared max
     smooth_hinge = mean(max.(0, 1 .- margins).^2)
@@ -161,7 +161,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     # data = load_iris_binary()
     data = produce_data(
                DataConfig(
-                    n_samples=500,
+                    n_samples=2000,
                     data_params=RBFDataParams(
                         gamma=100.0,
                         n_support_vectors=200,
@@ -191,7 +191,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     y_test = data[:y_test]
    
     # Create simple quantum feature map
-    n_qubits = 8
+    n_qubits = 4
     n_features = 2
     n_layers = 4
     entanglement = linear
@@ -224,7 +224,8 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     # loss_fn = K -> -centered_kernel_target_alignment(K, y_train)
     # loss_fn = K -> kernel_target_alignment(K, y_train)
     # loss_fn = K -> smooth_svm_loss_tanh(K, y_train; C=1.0, λ=0.01, β=5.0)
-    loss_fn = K -> smooth_hinge_loss(K, y_train; C = 1.0, λ=0.1)
+    Y_outer = y_train * y_train'
+    loss_fn = K -> smooth_hinge_loss(K, Y_outer; C = 1.0, λ=0.1)
     trainer = QuantumKernelTrainer(
         kernel,
         loss_fn,
@@ -277,7 +278,7 @@ function run_gradient_descent_demo(;seed::Union{Int, Nothing}=nothing)
     end
 
     println("\nStarting training ...\n")
-    ITERS = 100
+    ITERS = 10
     sol = train!(trainer,
                  optimizer= OptimizationOptimisers.AMSGrad(eta=0.01),
                  # optimizer= LBFGS(),
