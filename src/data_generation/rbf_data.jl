@@ -55,6 +55,81 @@ A `NamedTuple` containing:
 - `labels_sv`: The labels for the support vectors.
 - `bias`: The bias term.
 """
+# function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
+#     # extract DataConfig
+#     n_samples = data_config.n_samples
+#     n_support_vectors = data_config.data_params.n_support_vectors
+#     feature_range = data_config.data_params.feature_range 
+#     gamma = data_config.data_params.gamma
+#     alpha_range = data_config.data_params.alpha_range 
+#     bias_range = data_config.data_params.bias_range 
+#     seed = data_config.seed
+
+#     Random.seed!(seed)
+    
+#     # Helper to scale uniform random numbers to a given range
+#     rand_in_range(range_tuple, dims...) = range_tuple[1] .+ rand(dims...) .* (range_tuple[2] - range_tuple[1])
+
+
+#     # 1. Generate points first
+#     X = rand(2, n_samples)
+
+#     # 2. Design boundary to split them ~50/50
+#     support_vectors = rand(2, n_support_vectors)
+#     n_pos = n_support_vectors ÷ 2
+#     labels_sv = vcat(ones(Int, n_pos), -ones(Int, n_support_vectors - n_pos))[randperm(n_support_vectors)]
+#     alphas = rand_in_range(alpha_range, n_support_vectors)
+
+#     # 3. Compute kernel contributions for all points
+#     kernel_matrix = vcat([rbf_kernel(x, support_vectors, gamma) for x in eachcol(X)]...)
+#     scores = kernel_matrix * (alphas .* labels_sv)
+
+#     # 4. Set bias to achieve target class balance
+#     target_fraction = 0.5
+#     bias = -quantile(scores, target_fraction)  # Choose bias so ~50% are positive    
+
+#     # Step 6: Classify using the decision function
+#     function decision_function(x_point::AbstractVector)
+#         # f(x) = Σᵢ αᵢ yᵢ K(x, sᵢ) + b
+#         # kernel_values is n_features x n_support_vectors matrix
+#         kernel_values = rbf_kernel(x_point, support_vectors, gamma)
+#         # alphas and labels_sv are both column vectors of length n_support_vector
+#         # to do element wise multiplication we need to get dimensions right
+#         return sum((alphas .* labels_sv)' .* kernel_values) + bias
+#     end
+    
+#     # Classify all points using a comprehension over the rows of X
+#     y_float = [sign(decision_function(x_col)) for x_col in eachcol(X)]
+    
+#     # Handle boundary points (where f(x) = 0) by assigning a random label
+#     boundary_mask = y_float .== 0
+#     num_boundary = sum(boundary_mask)
+#     if num_boundary > 0
+#         y_float[boundary_mask] .= rand([-1, 1], num_boundary)
+#     end
+    
+#     # Convert labels to integers
+
+#     # NOW scale to desired feature range if needed
+#     scale = feature_range[2] - feature_range[1]
+#     offset = feature_range[1]
+#     X_scaled = X .* scale .+ offset
+#     support_vectors_scaled = support_vectors .* scale .+ offset
+
+#     return Dict(
+#         :X=>X_scaled, 
+#         :y=>y_float, 
+#         :support_vectors=>support_vectors, 
+#         :alphas=>alphas, 
+#         :labels_sv=>labels_sv, 
+#         :bias=>bias,
+#         :seed=>seed,
+#     )
+# end
+
+
+# use expection and the mean of the decision function
+# (without bias) to determine the bias grid sampled IID. 
 function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
     # extract DataConfig
     n_samples = data_config.n_samples
@@ -62,7 +137,6 @@ function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
     feature_range = data_config.data_params.feature_range 
     gamma = data_config.data_params.gamma
     alpha_range = data_config.data_params.alpha_range 
-    bias_range = data_config.data_params.bias_range 
     seed = data_config.seed
 
     Random.seed!(seed)
@@ -74,32 +148,19 @@ function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
     # 1. Generate points first
     X = rand(2, n_samples)
 
-    # 2. Design boundary to split them ~50/50
     support_vectors = rand(2, n_support_vectors)
-    n_pos = n_support_vectors ÷ 2
-    labels_sv = vcat(ones(Int, n_pos), -ones(Int, n_support_vectors - n_pos))[randperm(n_support_vectors)]
+    labels_sv = rand([-1, 1], n_support_vectors)
     alphas = rand_in_range(alpha_range, n_support_vectors)
+
+    X_grid = rand(2, 10000)
+    kernel_matrix = vcat([rbf_kernel(x, support_vectors, gamma) for x in eachcol(X_grid)]...)
+    scores = kernel_matrix * (alphas .* labels_sv)
+    b = -mean(scores)
 
     # 3. Compute kernel contributions for all points
     kernel_matrix = vcat([rbf_kernel(x, support_vectors, gamma) for x in eachcol(X)]...)
     scores = kernel_matrix * (alphas .* labels_sv)
-
-    # 4. Set bias to achieve target class balance
-    target_fraction = 0.5
-    bias = -quantile(scores, target_fraction)  # Choose bias so ~50% are positive    
-
-    # Step 6: Classify using the decision function
-    function decision_function(x_point::AbstractVector)
-        # f(x) = Σᵢ αᵢ yᵢ K(x, sᵢ) + b
-        # kernel_values is n_features x n_support_vectors matrix
-        kernel_values = rbf_kernel(x_point, support_vectors, gamma)
-        # alphas and labels_sv are both column vectors of length n_support_vector
-        # to do element wise multiplication we need to get dimensions right
-        return sum((alphas .* labels_sv)' .* kernel_values) + bias
-    end
-    
-    # Classify all points using a comprehension over the rows of X
-    y_float = [sign(decision_function(x_col)) for x_col in eachcol(X)]
+    y_float = sign.(scores .+ b)
     
     # Handle boundary points (where f(x) = 0) by assigning a random label
     boundary_mask = y_float .== 0
@@ -109,6 +170,7 @@ function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
     end
     
     # Convert labels to integers
+    y = Int.(y_float)
 
     # NOW scale to desired feature range if needed
     scale = feature_range[2] - feature_range[1]
@@ -118,11 +180,11 @@ function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
 
     return Dict(
         :X=>X_scaled, 
-        :y=>y_float, 
+        :y=>y, 
         :support_vectors=>support_vectors, 
         :alphas=>alphas, 
         :labels_sv=>labels_sv, 
-        :bias=>bias,
+        :bias=>b,
         :seed=>seed,
     )
 end

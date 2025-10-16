@@ -2,6 +2,24 @@
 using LIBSVM
 using Statistics
 using OptimizationOptimisers
+using PyCall
+
+"""
+Helper to evaluate a single C value on a precomputed kernel using CV.
+"""
+function _evaluate_C_with_cv(K::Matrix, y::AbstractVector, C::Float64, cv_folds::Int)
+    svm_module = pyimport("sklearn.svm")
+    model_selection = pyimport("sklearn.model_selection")
+    np = pyimport("numpy")
+
+    y_np = np.asarray(y)
+    K_np = np.asarray(K)
+    
+    clf = svm_module.SVC(kernel="precomputed", C=C)
+    scores = model_selection.cross_val_score(clf, K_np, y_np, cv=cv_folds)
+    
+    return mean(pyconvert(Vector{Float64}, scores))
+end
 
 """
 Smooth hinge loss for SVM (from svc_loss_demo.jl)
@@ -104,6 +122,38 @@ function cv_C_search(
 end
 
 
+"""
+    find_best_proxy_C(config, X_sub, y_sub) -> Float64
+
+STAGE 1: Search for a single, good proxy C value on a subset of data.
+"""
+function find_best_proxy_C(config::ExperimentConfig, X_sub::AbstractMatrix, y_sub::AbstractVector)
+    kernel_config = config.kernel_config
+    scores_by_C = Dict(C => Float64[] for C in config.c_ranges)
+    
+    @info "Starting Stage 1: Finding proxy C on a subset of data" n_samples=size(X_sub, 2)
+    
+    # Run a small number of trials with random kernels
+    for i in 1:10 # A small, fixed number of trials is sufficient
+        feature_map = create_reuploading_feature_map(kernel_config, config.seed + i)
+        kernel = FidelityKernel(feature_map)
+        K_sub = evaluate(kernel, X_sub)
+        
+        for C in config.c_ranges
+            # Use our new helper for evaluation
+            score = _evaluate_C_with_cv(K_sub, y_sub, C, config.cv_folds)
+            push!(scores_by_C[C], score)
+        end
+    end
+    
+    # Average the scores for each C and pick the best
+    avg_scores = Dict(C => mean(scores) for (C, scores) in scores_by_C)
+    proxy_C = findmax(avg_scores)[2] # [2] gets the key (the C value)
+    
+    @info "Stage 1 complete. Best proxy C found." proxy_C=proxy_C
+    return proxy_C
+end
+
 function random_starts_search(
     config::ExperimentConfig{<:DataParams, <:ReuploadingKernelHyperparameterSearchConfig},
     X_train::AbstractMatrix,
@@ -117,6 +167,11 @@ function random_starts_search(
     kernel_config = config.kernel_config
     iterations = kernel_config.iterations
     n_full = size(X_train, 1)
+
+    subset_size = min(400, size(X_train, 1)) # Use up to 400 samples
+    X_sub = X_train[1:subset_size, :]
+    y_sub = y_train[1:subset_size]
+    proxy_C = find_best_proxy_C(config, X_sub, y_sub)
     
     # Phase 1: Coarse search (20% data, 20 iterations)
     n_phase1 = div(n_full, 5)
@@ -145,7 +200,7 @@ function random_starts_search(
         # Evaluate
         val_acc = evaluate_kernel_svm(kernel, 
             X_train[1:n_phase1, :], y_train[1:n_phase1],
-            X_val, y_val)
+            X_val, y_val, proxy_C)
         
         push!(phase1_results, (fm = feature_map, val_acc=val_acc, kernel=kernel))
         @info "  Param Set $n: val_acc=$(round(val_acc*100, digits=1))%"
@@ -180,7 +235,7 @@ function random_starts_search(
         # Evaluate
         val_acc = evaluate_kernel_svm(kernel,
             X_train[1:n_phase2, :], y_train[1:n_phase2],
-            X_val, y_val)
+            X_val, y_val, proxy_C)
         
         push!(phase2_results, (fm = feature_map, val_acc=val_acc, kernel=kernel, losses=losses))
         @info "  Param Set $n: val_acc=$(round(val_acc*100, digits=1))%"
@@ -208,7 +263,7 @@ function random_starts_search(
            callback=(s, l) -> push!(final_losses, l))
     
     # Final evaluation
-    final_val_acc = evaluate_kernel_svm(kernel, X_train, y_train, X_val, y_val)
+    final_val_acc = evaluate_kernel_svm(kernel, X_train, y_train, X_val, y_val, proxy_C)
     
     @info "Final: val_acc=$(round(final_val_acc*100, digits=1))%"
         
@@ -271,6 +326,8 @@ function train_reuploading_kernel_with_cv(
     best_weights, best_biases, losses, history = random_starts_search(
         config, X_train_sub, y_train_sub, X_val, y_val
     )
+
+    @info losses
 
     best_C = cv_C_search(config, X_train, y_train, best_weights, best_biases)
     

@@ -88,7 +88,7 @@ function generate_pauli_expectation_data_grid(data_config::DataConfig{QuantumPau
     end
     
     # Create grid
-    grid_1d = range(0, 2π, length=grid_points_per_dim)
+    grid_1d = range(-π, π, length=grid_points_per_dim)
     
     # For efficiency, only create full grid if n_features <= 3
     if n_features <= 3

@@ -24,48 +24,6 @@ function evaluate_kernel_cv(K::AbstractMatrix, y::AbstractVector, C::Float64, cv
     end
 end
 
-"""
-    evaluate_pauli_config_cv(paulis, reps, entanglement, n_qubits, X, y, C, cv_folds)
-
-Evaluate a Pauli configuration using cross-validation with precomputed kernel SVM.
-Returns mean CV accuracy.
-"""
-# function evaluate_pauli_config_cv(paulis::Vector{String}, reps::Int,
-#                                    entanglement::String, n_qubits::Int,
-#                                    X::AbstractMatrix, y::AbstractVector,
-#                                    C::Float64, cv_folds::Int)
-#     qiskit_lib = pyimport("qiskit.circuit.library")
-#     qiskit_kernels = pyimport("qiskit_machine_learning.kernels")
-#     svm_module = pyimport("sklearn.svm")
-#     model_selection = pyimport("sklearn.model_selection")
-#     numpy = pyimport("numpy")
-    
-#     X_row = X'
-    
-#     try
-#         feature_map = qiskit_lib.PauliFeatureMap(
-#             feature_dimension=size(X, 1),
-#             reps=reps,
-#             entanglement=entanglement,
-#             paulis=pylist(paulis)
-#         )
-       
-#         kernel = qiskit_kernels.FidelityStatevectorKernel(feature_map=feature_map)
-#         K_py = kernel.evaluate(x_vec=X_row)
-#         K_np = numpy.asarray(K_py)
-#         y_np = numpy.asarray(y)
-       
-#         # Cross-validation with precomputed kernel
-#         clf = svm_module.SVC(kernel="precomputed", C=C)
-#         scores = model_selection.cross_val_score(clf, K_np, y_np, cv=cv_folds)
-        
-#         return mean(pyconvert(Vector{Float64}, scores))
-#     catch e
-#         @warn "Failed CV for Pauli config" paulis exception=e
-#         return -Inf
-#     end
-# end
-
 # --- MULTI-STAGE SEARCH FUNCTIONS ---
 
 """
@@ -85,6 +43,8 @@ function find_best_proxy_C(config::ExperimentConfig{<:Any, <:PauliKernelHyperpar
             paulis = generate_constrained_pauli_set(kernel_config.search_constraints, seed=config.seed + i),
             reps = rand(kernel_config.reps),
             entanglement = rand(kernel_config.entanglement),
+            # NOTE: Needed for complete definition of this config,
+            # but this value of C is never used
             C=1.0
         )
         

@@ -56,9 +56,8 @@ DrWatson.default_prefix(c::DataConfig) = savename(c.data_params)
     dataset_type::String="rbf"
     gamma::Float64
     n_support_vectors::Int
-    alpha_range::Tuple{Float64, Float64} = (0.1, 2.0)
-    bias_range::Tuple{Float64, Float64} = (-1.0, 1.0)
-    feature_range::Tuple{Float64, Float64} = (0.0, 2π)
+    alpha_range::Tuple{Float64, Float64} = (1/(2π), 1.0)
+    feature_range::Tuple{Float64, Float64} = (-π, π)
 end
 
 
@@ -72,6 +71,18 @@ DrWatson.allaccess(c::RBFDataParams) = (:gamma, :n_support_vectors, :alpha_range
     entanglement::String = "full"
     gap::Float64 = 0.3
     grid_points_per_dim::Int = 20
+end
+
+@kwdef struct ReuploadingDataParams <: DataParams
+    dataset_type::String="reup"
+    n_qubits::Int
+    n_features::Int = 2
+    n_layers::Int
+    entanglement::EntanglementBlock = linear
+    # for svm
+    alpha_range::Tuple{Float64, Float64} = (1/(2π), 1.0)
+    n_support_vectors::Int
+    feature_range::Tuple{Float64, Float64} = (-π, π)
 end
 
 DrWatson.allaccess(c::QuantumPauliDataParams) = (:n_qubits, :paulis, :reps, :entanglement, :gap, :grid_points_per_dim)
@@ -116,7 +127,7 @@ end
     entanglement::String = "linear"
     
     # Training configuration
-    iterations::Vector{Int} = [5, 5, 10]
+    iterations::Vector{Int} = [20, 20, 30]
         
     # Optimization parameter grid search
     learning_rate::Float64 = 0.01
@@ -159,7 +170,7 @@ end
     
     # Search configuration
     search_strategy::String = "random"  
-    n_search_iterations::Int = 5
+    n_search_iterations::Int = 50
     search_constraints::PauliSearchConstraints = PauliSearchConstraints()
           
     # Reproducibility
@@ -248,7 +259,7 @@ end
     seed::Int = 42
 end
 
-DrWatson.default_prefix(c::ExperimentConfig) = join(savename(c.data_config), savename(c.kernel_config), "_")
+DrWatson.default_prefix(c::ExperimentConfig) = join(savename(c.data_config), "_")
 
 """
 Convert experiment config to DrWatson-compatible dict

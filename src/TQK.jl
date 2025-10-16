@@ -32,6 +32,7 @@ include("reupload_hyperparam_search.jl")
 include("data_generation/quantum_data.jl")
 include("data_generation/rbf_data.jl")
 include("data_generation/load_data.jl")
+include("data_generation/reupload_data.jl")
 
 
 # Export types
@@ -46,7 +47,7 @@ export PauliFeatureMapConfig, PauliSearchConstraints
 # Config
 export ExperimentConfig, DataConfig, KernelHyperparameterSearchConfig
 export RBFKernelHyperparameterSearchConfig, ReuploadingKernelHyperparameterSearchConfig
-export PauliKernelHyperparameterSearchConfig, DataParams, QuantumPauliDataParams, RBFDataParams
+export PauliKernelHyperparameterSearchConfig, DataParams, QuantumPauliDataParams, RBFDataParams, ReuploadingDataParams
 
 # Results
 export ReuploadingKernelHyperparameters, PauliKernelHyperparameters, KernelHyperparameters, RBFHyperparameters
@@ -78,8 +79,7 @@ export kernel_target_alignment
 export create_pauli_feature_map, compute_pauli_kernel_matrix
 
 # data generation
-export generate_pauli_expectation_data_grid, generate_pseudo_svm_dataset, prepare_data!, produce_data
-
+export generate_pauli_expectation_data_grid, generate_pseudo_svm_dataset, prepare_data!, produce_data, generate_reupload_data
 
 export search_pauli_hyperparameters, tune_svm_C
 export search_rbf_hyperparameters 

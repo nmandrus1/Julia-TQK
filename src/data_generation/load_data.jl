@@ -42,7 +42,7 @@ function produce_data(config::DataConfig)
     X_train = MultivariateStats.predict(pca_model, X_train_scaled)
     X_test = MultivariateStats.predict(pca_model, X_test_scaled)
 
-    return @dict X_train y_train X_test y_test config
+    return Dict("X_train" => X_train, "y_train" => y_train, "X_test" => X_test, "y_test" => y_test, "config" =>config) 
 end
 
 """
@@ -67,7 +67,7 @@ function prepare_data!(config::ExperimentConfig)
         datadir("sims", config.data_config.data_params.dataset_type);
         suffix="jld2",
     )
-    
+   
     # config.data_config.data_path = filepath
     return data, filepath
 end
