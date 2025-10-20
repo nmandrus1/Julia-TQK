@@ -21,7 +21,8 @@ function kernel_identifier(config::KernelHyperparameterSearchConfig)
             kernel = :reup,
             q = config.n_qubits,
             l = config.n_layers,
-            ent = config.entanglement
+            ent = config.entanglement,
+            lr = config.learning_rate
         )
         return savename(params, connector="_")
     end
@@ -66,6 +67,7 @@ function generate_experiment_grid(;
                     n_features = data_config.n_features,
                     n_layers = params[:n_layers],
                     entanglement = params[:entanglement],
+                    # learning_rate = params[:learning_rate],
                     seed = data_config.seed
                 ))
             end
@@ -94,7 +96,7 @@ function generate_experiment_grid(;
                 experiment_name = exp_name,
                 data_config = data_config,
                 kernel_config = kernel_config,
-                learning_curve_sizes = collect(100:100:min(1000, data_config.n_samples)),
+                learning_curve_sizes = collect(100:250:data_config.n_samples),
                 seed = data_config.seed
             ))
         end
@@ -335,22 +337,35 @@ Quick start: generate and run small test.
 """
 function quick_test()
     # Single RBF dataset
-    data_config = DataConfig(
+    data_config1 = DataConfig(
         n_samples=500,
         n_features=2,
-        data_params=RBFDataParams(gamma=1.0, n_support_vectors=20),
+        data_params=RBFDataParams(gamma=2.0, n_support_vectors=10),
         seed=42
+    )
+
+    data_config2 = DataConfig(
+        n_samples=500,
+        n_features=2,
+        data_params=ReuploadingDataParams(
+            n_qubits=4,
+            n_features=2,
+            n_layers=4,
+            entanglement=all_to_all,
+            n_support_vectors=10,
+        ),
+        seed = 53
     )
     
     # Test 4 reuploading configs
     reup_grid = Dict(
-        :n_qubits => [2, 4],
-        :n_layers => [2],
-        :entanglement => ["linear"],
+        :n_qubits => [2, 4, 8],
+        :n_layers => [2, 4, 8],
+        :entanglement => ["linear", "all_to_all"],
     )
     
     experiments = generate_experiment_grid(
-        dataset_configs=[data_config],
+        dataset_configs=[data_config1, data_config2],
         reuploading_grid=reup_grid,
         test_rbf=true,
         test_pauli=true
@@ -374,36 +389,70 @@ function run_full_suite()
             seed=s
         )
         for nsv in [10, 50]
-        for s in [42, 123]
+        for s in [42]
     ]
-    
-    quantum_configs = [
+
+    reuploading_2q_2l_configs = [
         DataConfig(
             n_samples=5000,
             n_features=2,
-            data_params=QuantumPauliDataParams(
+            data_params=ReuploadingDataParams(
                 n_qubits=2,
-                paulis=p,
-                reps=2,
-                entanglement=ent,
-                gap=0.3,
-                grid_points_per_dim=100
+                n_features=2,
+                n_layers=2,
+                entanglement=all_to_all,
+                n_support_vectors=nsv,
             ),
-            seed=s
+            seed = s
         )
-        for (p, ent) in [(["ZZ"], "linear"), (["X", "XY"], "full")]
-        for s in [42, 123]
+        for nsv in [10, 50]
+        for s in [42]
     ]
+
+    reuploading_8q_8l_configs = [
+        DataConfig(
+            n_samples=5000,
+            n_features=2,
+            data_params=ReuploadingDataParams(
+                n_qubits=8,
+                n_features=2,
+                n_layers=8,
+                entanglement=all_to_all,
+                n_support_vectors=nsv,
+            ),
+            seed = s
+        )
+        for nsv in [10, 50]
+        for s in [42]
+    ]    
+    # quantum_configs = [
+    #     DataConfig(
+    #         n_samples=5000,
+    #         n_features=2,
+
+    #         data_params=QuantumPauliDataParams(
+    #             n_qubits=2,
+    #             paulis=p,
+    #             reps=2,
+    #             entanglement=ent,
+    #             gap=0.3,
+    #             grid_points_per_dim=100
+    #         ),
+    #         seed=s
+    #     )
+    #     for (p, ent) in [(["ZZ"], "linear"), (["X", "XY"], "full")]
+    #     for s in [42]
+    # ]
     
     # Full reuploading grid
     reup_grid = Dict(
-        :n_qubits => [2, 4, 6, 8],
-        :n_layers => [2, 4, 6, 8],
-        :entanglement => ["linear", "all_to_all"],
+        :n_qubits => [2, 4, 8],
+        :n_layers => [2, 4, 8],
+        :entanglement => ["all_to_all"],
     )
     
     experiments = generate_experiment_grid(
-        dataset_configs=vcat(rbf_configs, quantum_configs),
+        dataset_configs=vcat(rbf_configs, reuploading_2q_2l_configs, reuploading_8q_8l_configs),
         reuploading_grid=reup_grid,
         test_rbf=true,
         test_pauli=true

@@ -40,64 +40,56 @@ end
 
 # --- PLOTTING FUNCTIONS ---
 
+# --- PLOTTING FUNCTIONS ---
+
 """
-    plot_experiment_summary(experiment_id::String, main_kernel_id::String)
+    plot_experiment_summary(experiment_id::String; top_n_reup::Int = 1)
 
 Generates a comprehensive 3-panel plot for a specific experiment run.
 
-1.  **Learning Curves**: Compares the learning curves of the specified kernel 
-    against the RBF and Pauli baselines for the same dataset.
-2.  **Optimization Loss**: Shows the training loss curve for the specified 
-    quantum kernel.
+It automatically finds the best-performing Reuploading kernels for the given 
+`experiment_id` and uses them for the detailed plots.
+
+# Arguments
+- `experiment_id::String`: The ID of the experiment to plot.
+- `top_n_reup::Int`: The number of top-performing reuploading kernels to display
+  on the learning curve and loss plots. Defaults to 1.
+
+# Plots
+1.  **Learning Curves**: Compares the learning curves of the top `n` reuploading 
+    kernels against the RBF and Pauli baselines for the same dataset.
+2.  **Optimization Loss**: Shows the training loss curves for each of the top `n` 
+    quantum kernels.
 3.  **Final Accuracy Comparison**: A bar chart of the best test accuracies for 
-    all kernels tested on this dataset.
+    **all** kernels tested on this dataset.
 """
-
-
-"""
-    plot_experiment_summary(experiment_id; main_kernel_id=nothing)
-
-Generates a comprehensive 3-panel plot for a specific experiment run.
-
-If `main_kernel_id` is not provided, it automatically finds the best-performing
-Reuploading kernel for the given `experiment_id` and uses it for the detailed plots.
-
-1.  **Learning Curves**: Compares the learning curves of the main kernel 
-    against the RBF and Pauli baselines for the same dataset.
-2.  **Optimization Loss**: Shows the training loss curve for the main 
-    quantum kernel.
-3.  **Final Accuracy Comparison**: A bar chart of the best test accuracies for 
-    all kernels tested on this dataset.
-"""
-function plot_experiment_summary(experiment_id::String; main_kernel_id::Union{String, Nothing} = nothing)
+function plot_experiment_summary(experiment_id::String; top_n_reup::Int = 1)
     
-    local kernel_to_plot
+    # --- Find the top N reuploading kernels for this experiment ---
+    all_results_for_exp = find_experiments(experiment_id=experiment_id)
+    
+    reup_results = filter(row -> contains(row.kernel_id, "reup"), all_results_for_exp)
 
-    # --- Automatically find the best reuploading kernel if none is specified ---
-    if isnothing(main_kernel_id)
-        @info "No main kernel specified. Finding the best Reuploading kernel for this dataset..."
-        all_results_for_exp = find_experiments(experiment_id=experiment_id)
-        
-        reup_results = filter(row -> contains(row.kernel_id, "reup"), all_results_for_exp)
-
-        if isempty(reup_results)
-            @error "No reuploading kernels found for experiment '$experiment_id'. Cannot automatically select a main kernel."
-            return
-        end
-
-        # Find the row with the maximum test accuracy among reuploading kernels
-        best_reup_row = reup_results[argmax(skipmissing(reup_results.best_test_acc)), :]
-        kernel_to_plot = best_reup_row.kernel_id
-        @info "Best Reuploading kernel found: $kernel_to_plot with accuracy $(best_reup_row.best_test_acc)"
-    else
-        kernel_to_plot = main_kernel_id
+    if isempty(reup_results)
+        @error "No reuploading kernels found for experiment '$experiment_id'. Cannot generate plot."
+        return
     end
+
+    # Sort by test accuracy and take the top N
+    sort!(reup_results, :best_test_acc, rev=true)
+    num_to_plot = min(top_n_reup, nrow(reup_results))
+    top_kernels_df = first(reup_results, num_to_plot)
+    kernels_to_plot = top_kernels_df.kernel_id
+    
+    @info "Plotting top $num_to_plot reuploading kernels: $kernels_to_plot"
 
     # --- Plot 1: Learning Curves ---
     p1 = plot(xlabel="Training Samples", ylabel="Accuracy", title="Learning Curves for $experiment_id", legend=:bottomright)
     
-    # Plot curves for the selected main kernel, rbf, and pauli
-    for kid in [kernel_to_plot, "rbf", "pauli"]
+    # Combine top kernels with baselines for plotting
+    all_curve_ids = vcat(kernels_to_plot, ["rbf", "pauli"])
+
+    for kid in all_curve_ids
         try
             curves = load_curves(experiment_id, kid)
             sizes = sort(collect(keys(curves)))
@@ -108,22 +100,26 @@ function plot_experiment_summary(experiment_id::String; main_kernel_id::Union{St
         end
     end
 
-    # --- Plot 2: Optimization Loss Curve ---
-    p2 = plot(xlabel="Iteration", ylabel="Loss", title="Optimization Loss for $kernel_to_plot", legend=false)
-    if contains(kernel_to_plot, "reup")
-        try
-            @info hyperparams = load_hyperparams(experiment_id, kernel_to_plot)
-            if hasfield(typeof(hyperparams), :loss) && !isempty(hyperparams.loss)
-                plot!(p2, hyperparams.loss, lw=2, color=:purple)
-            else
-                annotate!(p2, 0.5, 0.5, text("Loss data not available", 10, :center))
-            end
-        catch e
-            @warn "Could not load hyperparameters to plot loss for $kernel_to_plot."
-            annotate!(p2, 0.5, 0.5, text("Hyperparams file not found", 10, :center))
-        end
+    # --- Plot 2: Optimization Loss Curves ---
+    p2 = plot(xlabel="Iteration", ylabel="Loss", title="Optimization Loss for Top Kernels", legend=:topright)
+    
+    if isempty(kernels_to_plot)
+         annotate!(p2, 0.5, 0.5, text("No trainable kernels to plot", 10, :center))
     else
-        annotate!(p2, 0.5, 0.5, text("Not a trainable kernel", 10, :center))
+        for kid in kernels_to_plot
+            try
+                hyperparams = load_hyperparams(experiment_id, kid)
+                if hasfield(typeof(hyperparams), :loss) && !isempty(hyperparams.loss)
+                    plot!(p2, hyperparams.loss, lw=2, label=kid)
+                else
+                    # Add a placeholder line to show in the legend that data is missing
+                    plot!(p2, [NaN], label="$kid (no loss data)", linestyle=:dash)
+                end
+            catch e
+                @warn "Could not load hyperparameters to plot loss for $kid."
+                plot!(p2, [NaN], label="$kid (file not found)", linestyle=:dash)
+            end
+        end
     end
     
     # --- Plot 3: Final Accuracy Comparison ---
@@ -131,7 +127,7 @@ function plot_experiment_summary(experiment_id::String; main_kernel_id::Union{St
     sort!(all_results, :best_test_acc, rev=true)
     
     p3 = bar(all_results.kernel_id, all_results.best_test_acc,
-             title="Final Test Accuracy Comparison",
+             title="Final Test Accuracy Comparison (All Kernels)",
              ylabel="Best Test Accuracy",
              xrotation=45,
              legend=false,
