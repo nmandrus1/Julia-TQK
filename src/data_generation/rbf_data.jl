@@ -170,7 +170,7 @@ function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
     end
     
     # Convert labels to integers
-    y = Int.(y_float)
+    # y = Int.(y_float)
 
     # NOW scale to desired feature range if needed
     scale = feature_range[2] - feature_range[1]
@@ -180,7 +180,7 @@ function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
 
     return Dict(
         :X=>X_scaled, 
-        :y=>y, 
+        :y=>y_float, 
         :support_vectors=>support_vectors, 
         :alphas=>alphas, 
         :labels_sv=>labels_sv, 

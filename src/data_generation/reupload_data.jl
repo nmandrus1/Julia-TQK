@@ -56,7 +56,7 @@ function generate_reupload_data(data_config::DataConfig{ReuploadingDataParams})
     end
     
     # Convert labels to integers
-    y = Int.(y_float)
+    # y = Int.(y_float)
 
     # NOW scale to desired feature range if needed
     scale = feature_range[2] - feature_range[1]
@@ -66,7 +66,7 @@ function generate_reupload_data(data_config::DataConfig{ReuploadingDataParams})
 
     return Dict(
         :X=>X_scaled, 
-        :y=>y, 
+        :y=>y_float, 
         :support_vectors=>support_vectors, 
         :alphas=>alphas, 
         :labels_sv=>labels_sv, 

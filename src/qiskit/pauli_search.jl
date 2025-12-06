@@ -31,11 +31,11 @@ end
 
 STAGE 1: Search for a single, good proxy C value on a subset of data.
 """
-function find_best_proxy_C(config::ExperimentConfig{<:Any, <:PauliKernelHyperparameterSearchConfig}, X_sub::AbstractMatrix, y_sub::AbstractVector)
+function find_best_proxy_C(config::ExperimentConfig{<:DataParams, <:PauliKernelHyperparameterSearchConfig}, X_sub::AbstractMatrix, y_sub::AbstractVector)
     kernel_config = config.kernel_config
     scores_by_C = Dict(C => [] for C in config.c_ranges)
     
-    @info "Starting Stage 1: Finding proxy C on a subset of data" n_samples=size(X_sub, 2)
+    @info "Starting Stage 1: Finding proxy C on a subset of data" n_samples=size(X_sub, 1)
     
     # Run a small number of random Pauli searches
     for i in 1:10 # A small, fixed number of iterations is sufficient
@@ -122,6 +122,8 @@ function search_pauli_hyperparameters(
             C=proxy_C
         )
         
+        @info hyperparams.paulis
+
         K_full = compute_pauli_kernel_matrix(hyperparams, X_train)
         score = evaluate_kernel_cv(K_full, y_train, proxy_C, config.cv_folds)
         

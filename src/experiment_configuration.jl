@@ -61,7 +61,7 @@ DrWatson.default_prefix(c::DataConfig) = savename(c.data_params)
 end
 
 
-DrWatson.allaccess(c::RBFDataParams) = (:gamma, :n_support_vectors, :alpha_range, :bias_range, :feature_range )
+DrWatson.allaccess(c::RBFDataParams) = (:gamma, :n_support_vectors, :alpha_range, :feature_range )
 
 @kwdef struct QuantumPauliDataParams <: DataParams
     dataset_type::String="pauli"
@@ -72,6 +72,8 @@ DrWatson.allaccess(c::RBFDataParams) = (:gamma, :n_support_vectors, :alpha_range
     gap::Float64 = 0.3
     grid_points_per_dim::Int = 20
 end
+DrWatson.allaccess(c::QuantumPauliDataParams) = (:n_qubits, :paulis, :reps, :entanglement, :gap, :grid_points_per_dim)
+DrWatson.default_prefix(c::QuantumPauliDataParams) = join(["pauli_data", join(c.paulis, "-")], "_")
 
 @kwdef struct ReuploadingDataParams <: DataParams
     dataset_type::String="reup"
@@ -85,8 +87,8 @@ end
     feature_range::Tuple{Float64, Float64} = (-π, π)
 end
 
-DrWatson.allaccess(c::QuantumPauliDataParams) = (:n_qubits, :paulis, :reps, :entanglement, :gap, :grid_points_per_dim)
-DrWatson.default_prefix(c::QuantumPauliDataParams) = join(["pauli_data", join(c.paulis, "-")], "_")
+DrWatson.allaccess(c::ReuploadingDataParams) = (:n_support_vectors, :alpha_range, :feature_range, :n_qubits, :n_layers, :entanglement)
+
 
 # ============================================================================
 # RBF Kernel Configuration
@@ -127,7 +129,7 @@ end
     entanglement::String = "linear"
     
     # Training configuration
-    iterations::Vector{Int} = [20, 20, 30]
+    iterations::Vector{Int} = [20, 30, 50]
         
     # Optimization parameter grid search
     learning_rate::Float64 = 0.01

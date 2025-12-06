@@ -6,6 +6,10 @@ function data_from_config(config::DataConfig{RBFDataParams})
     return generate_pseudo_svm_dataset(config)
 end
 
+function data_from_config(config::DataConfig{ReuploadingDataParams})
+    return generate_reupload_data(config)
+end
+
 function data_from_config(config::DataConfig{QuantumPauliDataParams})
     return generate_pauli_expectation_data_grid(config)
 end

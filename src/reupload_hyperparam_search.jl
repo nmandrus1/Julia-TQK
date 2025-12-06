@@ -1,8 +1,9 @@
 
+using TQK
 using LIBSVM
 using Statistics
 using OptimizationOptimisers
-using PyCall
+using PythonCall
 
 """
 Helper to evaluate a single C value on a precomputed kernel using CV.
@@ -123,21 +124,21 @@ end
 
 
 """
-    find_best_proxy_C(config, X_sub, y_sub) -> Float64
+    find_best_proxy_C_reup(config, X_sub, y_sub) -> Float64
 
 STAGE 1: Search for a single, good proxy C value on a subset of data.
 """
-function find_best_proxy_C(config::ExperimentConfig, X_sub::AbstractMatrix, y_sub::AbstractVector)
+function find_best_proxy_C_reup(config::ExperimentConfig, X_sub::AbstractMatrix, y_sub::AbstractVector)
     kernel_config = config.kernel_config
     scores_by_C = Dict(C => Float64[] for C in config.c_ranges)
     
-    @info "Starting Stage 1: Finding proxy C on a subset of data" n_samples=size(X_sub, 2)
+    @info "Starting Stage 1: Finding proxy C on a subset of data" n_samples=size(X_sub, 1)
     
     # Run a small number of trials with random kernels
     for i in 1:10 # A small, fixed number of trials is sufficient
         feature_map = create_reuploading_feature_map(kernel_config, config.seed + i)
         kernel = FidelityKernel(feature_map)
-        K_sub = evaluate(kernel, X_sub)
+        K_sub = TQK.evaluate(kernel, X_sub)
         
         for C in config.c_ranges
             # Use our new helper for evaluation
@@ -171,7 +172,7 @@ function random_starts_search(
     subset_size = min(400, size(X_train, 1)) # Use up to 400 samples
     X_sub = X_train[1:subset_size, :]
     y_sub = y_train[1:subset_size]
-    proxy_C = find_best_proxy_C(config, X_sub, y_sub)
+    proxy_C = find_best_proxy_C_reup(config, X_sub, y_sub)
     
     # Phase 1: Coarse search (20% data, 20 iterations)
     n_phase1 = div(n_full, 5)

@@ -388,7 +388,7 @@ function run_full_suite()
             data_params=RBFDataParams(gamma=2.0, n_support_vectors=nsv),
             seed=s
         )
-        for nsv in [10, 50]
+        for nsv in [50]
         for s in [42]
     ]
 
@@ -397,34 +397,34 @@ function run_full_suite()
             n_samples=5000,
             n_features=2,
             data_params=ReuploadingDataParams(
-                n_qubits=2,
+                n_qubits=8,
                 n_features=2,
-                n_layers=2,
+                n_layers=4,
                 entanglement=all_to_all,
                 n_support_vectors=nsv,
             ),
             seed = s
         )
-        for nsv in [10, 50]
+        for nsv in [50]
         for s in [42]
     ]
 
-    reuploading_8q_8l_configs = [
-        DataConfig(
-            n_samples=5000,
-            n_features=2,
-            data_params=ReuploadingDataParams(
-                n_qubits=8,
-                n_features=2,
-                n_layers=8,
-                entanglement=all_to_all,
-                n_support_vectors=nsv,
-            ),
-            seed = s
-        )
-        for nsv in [10, 50]
-        for s in [42]
-    ]    
+    # reuploading_8q_8l_configs = [
+    #     DataConfig(
+    #         n_samples=5000,
+    #         n_features=2,
+    #         data_params=ReuploadingDataParams(
+    #             n_qubits=8,
+    #             n_features=2,
+    #             n_layers=8,
+    #             entanglement=all_to_all,
+    #             n_support_vectors=nsv,
+    #         ),
+    #         seed = s
+    #     )
+    #     for nsv in [10, 50]
+    #     for s in [42]
+    # ]    
     # quantum_configs = [
     #     DataConfig(
     #         n_samples=5000,
@@ -446,13 +446,14 @@ function run_full_suite()
     
     # Full reuploading grid
     reup_grid = Dict(
-        :n_qubits => [2, 4, 8],
-        :n_layers => [2, 4, 8],
-        :entanglement => ["all_to_all"],
+        :n_qubits => [8],
+        :n_layers => [4],
+        :entanglement => ["linear"],
     )
     
     experiments = generate_experiment_grid(
-        dataset_configs=vcat(rbf_configs, reuploading_2q_2l_configs, reuploading_8q_8l_configs),
+        # dataset_configs=vcat(rbf_configs, reuploading_2q_2l_configs, reuploading_8q_8l_configs),
+        dataset_configs=vcat(rbf_configs, reuploading_2q_2l_configs),
         reuploading_grid=reup_grid,
         test_rbf=true,
         test_pauli=true
