@@ -1,4 +1,4 @@
-function tune_kernel(config::PauliKernelHyperparameterSearchConfig, X, y)
+function tune_kernel(config::PauliMethod, X, y)
     best_kta = -Inf
     best_paulis = nothing
     
@@ -16,5 +16,5 @@ function tune_kernel(config::PauliKernelHyperparameterSearchConfig, X, y)
             best_paulis = current_paulis
         end
     end
-    return PauliKernelHyperparameters(paulis=best_paulis)
+    return TrainedPauliKernel(best_paulis)
 end

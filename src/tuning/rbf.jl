@@ -1,4 +1,4 @@
-function tune_kernel(config::RBFKernelHyperparameterSearchConfig, X, y)
+function tune_kernel(config::RBFMethod, X, y)
     best_kta = -Inf
     best_gamma = 0.1
     
@@ -15,5 +15,5 @@ function tune_kernel(config::RBFKernelHyperparameterSearchConfig, X, y)
             best_gamma = g
         end
     end
-    return RBFHyperparameters(gamma=best_gamma)
+    return TrainedRBFKernel(best_gamma)
 end

@@ -11,7 +11,12 @@ using Base.Threads
 # Include implementation files
 
 include("feature_maps/types.jl")
+
+# SPSA
+include("optimizers/spsa.jl")
+
 include("feature_maps/reupload.jl")
+include("feature_maps/pauli.jl")
 
 # experiment configuration (many types declared here)
 include("experiment_configuration.jl")
@@ -26,8 +31,6 @@ include("kernels/compute_uncompute.jl")
 
 include("utils/mock_hardware.jl")
 
-# SPSA
-include("optimizers/spsa.jl")
 
 # include("qiskit/qiskit_interface.jl")
 # include("qiskit/pauli_search.jl")
@@ -42,23 +45,21 @@ include("optimizers/spsa.jl")
 
 
 # Export types
-export AbstractFeatureMapConfig, ReuploadingConfig
+export AbstractFeatureMapConfig
+export ReuploadingConfig, PauliConfig
 export EntanglementStrategy, LinearEntanglement, CircularEntanglement, FullEntanglement
 
 # Optimization 
 export SPSAConfig
 
 # Qiskit
-export PauliFeatureMapConfig, PauliSearchConstraints
+export PauliSearchConstraints
 
 # Config
-export ExperimentConfig, DataConfig, KernelHyperparameterSearchConfig
-export RBFKernelHyperparameterSearchConfig, ReuploadingKernelHyperparameterSearchConfig
-export PauliKernelHyperparameterSearchConfig, DataParams, QuantumPauliDataParams, RBFDataParams, ReuploadingDataParams
-
-# Results
-export ReuploadingKernelHyperparameters, PauliKernelHyperparameters, KernelHyperparameters, RBFHyperparameters
-export KernelResults
+export AbstractDataParams, AbstractKernelMethod, AbstractTrainedKernel 
+export RBFMethod, PauliMethod, ReuploadingMethod
+export TrainedRBFKernel, TrainedPauliKernel, TrainedReuploadingKernel
+export ExperimentConfig
 
 # Export functions for feature maps
 export n_qubits, n_trainable_params, build_circuit
