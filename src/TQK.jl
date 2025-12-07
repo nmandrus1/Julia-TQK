@@ -9,14 +9,9 @@ using Random
 using Base.Threads
 
 # Include implementation files
-include("workspaces/interface.jl")
 
-include("feature_maps/interface.jl")
+include("feature_maps/types.jl")
 include("feature_maps/reupload.jl")
-
-include("workspaces/preallocated.jl")
-
-include("kernels/fidelity.jl")
 
 include("trainer/quantum_kernel_trainer.jl")
 
@@ -36,9 +31,8 @@ include("data_generation/reupload_data.jl")
 
 
 # Export types
-export AbstractQuantumFeatureMap, ReuploadingCircuit, FidelityKernel
-export EntanglementBlock, linear, alternating, all_to_all
-export AbstractFidelityWorkspace, PreallocatedWorkspace
+export AbstractQuantumFeatureMapConfig, ReuploadingConfig
+export EntanglementStrategy, LinearEntanglement, CircularEntanglement, FullEntanglement
 export QuantumKernelTrainer
 
 # Qiskit
@@ -54,8 +48,7 @@ export ReuploadingKernelHyperparameters, PauliKernelHyperparameters, KernelHyper
 export KernelResults
 
 # Export functions for feature maps
-export n_qubits, n_features, n_params, map_inputs!
-export assign_params!, assign_random_params!, get_params
+export n_qubits, n_trainable_params, build_circuit
 
 # Export functions for kernels
 export evaluate, evaluate!
@@ -64,16 +57,8 @@ export evaluate, evaluate!
 export create_preallocated_workspace
 export extract_gradients, get_grad_buffers!
 
-# gradients
-export loss_gradient_finite_diff
-
-# Export utility functions
-export compute_angles!
-
 # optimization
 export create_optimization_function, train!
-# basic loss functions
-export kernel_target_alignment
 
 # Pauli Feature Map Functions
 export create_pauli_feature_map, compute_pauli_kernel_matrix
