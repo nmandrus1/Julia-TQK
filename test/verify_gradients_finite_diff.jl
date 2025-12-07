@@ -1,13 +1,13 @@
-
+using TQK
 using Test
 using Yao
 using Zygote
 using LinearAlgebra
 
 # Include your source files
-include("../src/feature_maps/types.jl")
-include("../src/feature_maps/reupload.jl")
-include("../src/kernels/pure_fidelity.jl")
+# include("../src/feature_maps/types.jl")
+# include("../src/feature_maps/reupload.jl")
+# include("../src/kernels/pure_fidelity.jl")
 
 """
     finite_difference_gradient(f, x; ε=1e-5)
@@ -47,7 +47,7 @@ end
     params = randn(config.total_params)
     
     # Define the loss closure for easy calling
-    loss_fn(p) = kernel_target_alignment_loss(config, p, X, y)
+    loss_fn(p) = variational_kta_loss(config, p, X, y)
 
     println("Computing Zygote Gradient...")
     t_zygote = @elapsed begin

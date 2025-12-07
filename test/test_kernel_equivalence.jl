@@ -1,14 +1,14 @@
-
+using TQK
 using Test
 using Yao
 using LinearAlgebra
 
 # Include necessary files (adjust paths if needed)
 # Ensure TQK.jl or these specific files are loaded
-include("../src/feature_maps/types.jl")
-include("../src/feature_maps/reupload.jl")
-include("../src/kernels/pure_fidelity.jl")      # Phase 1 Method
-include("../src/kernels/compute_uncompute.jl")   # Phase 2 Method
+# include("../src/feature_maps/types.jl")
+# include("../src/feature_maps/reupload.jl")
+# include("../src/kernels/pure_fidelity.jl")      # Phase 1 Method
+# include("../src/kernels/compute_uncompute.jl")   # Phase 2 Method
 
 @testset "Kernel Math Equivalence" begin
     # 1. Setup

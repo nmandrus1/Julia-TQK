@@ -53,29 +53,38 @@ function compute_kernel_matrix_pure(config::AbstractFeatureMapConfig, params::Ab
     return K
 end
 
-"""
-    kernel_target_alignment_loss(config, params, X, y)
 
-The final objective function for training.
-Maximizes alignment = minimizes negative alignment.
 """
-function kernel_target_alignment_loss(config, params, X, y)
-    # 1. Compute Kernel
-    K = compute_kernel_matrix_pure(config, params, X)
-    
-    # 2. Compute Target Matrix T = y * y'
-    #    (y should be labels +1/-1)
+    kernel_target_alignment(K, y)
+
+Pure mathematical definition of KTA. 
+Agnostic to how K was generated (RBF, Quantum, etc.).
+Returns the raw score (higher is better).
+"""
+function kernel_target_alignment(K::AbstractMatrix, y::AbstractVector)
+    # y should be labels +1/-1
     T = y * y'
     
-    # 3. Compute Frobenius Inner Products
-    #    <A, B>_F = sum(A .* B)
-    inner_KT = dot(K, T)      # <K, T>
-    norm_K = dot(K, K)        # <K, K>
-    norm_T = dot(T, T)        # <T, T>
+    # Frobenius Inner Products
+    inner_KT = dot(K, T)
+    norm_K = dot(K, K)
+    norm_T = dot(T, T)
     
-    # 4. Calculate Alignment
-    alignment = inner_KT / sqrt(norm_K * norm_T)
+    # Alignment calculation
+    return inner_KT / sqrt(norm_K * norm_T)
+end
+
+"""
+    variational_kta_loss(config, params, X, y)
+
+The bridge between parameters and the metric.
+Computes the kernel from parameters, then calculates negative KTA.
+"""
+function variational_kta_loss(config, params, X, y)
+    # 1. Forward Pass (Quantum Simulation)
+    K = compute_kernel_matrix_pure(config, params, X)
     
-    # Return negative alignment because optimizers minimize loss
-    return -alignment 
+    # 2. Metric Calculation (Pure Math)
+    # Note: We negate it because optimizers MINIMIZE, but we want to MAXIMIZE KTA.
+    return -kernel_target_alignment(K, y)
 end

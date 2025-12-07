@@ -1,12 +1,13 @@
+using TQK
 using Test
 using Yao
 using Zygote
 using LinearAlgebra
 
 # Include the files we just wrote (adjust paths as necessary for your project structure)
-include("../src/feature_maps/types.jl")       # Abstract types
-include("../src/feature_maps/reupload.jl") # Factory
-include("../src/kernels/pure_fidelity.jl")    # Pure Kernel
+# include("../src/feature_maps/types.jl")       # Abstract types
+# include("../src/feature_maps/reupload.jl") # Factory
+# include("../src/kernels/pure_fidelity.jl")    # Pure Kernel
 
 @testset "Pure Kernel AD Compatibility" begin
     # 1. Setup Data
@@ -38,7 +39,7 @@ include("../src/kernels/pure_fidelity.jl")    # Pure Kernel
     @testset "Backward Pass (Zygote)" begin
         # Can we take the gradient of the loss w.r.t params?
         grads = gradient(params) do p
-            kernel_target_alignment_loss(config, p, X, y)
+            variational_kta_loss(config, p, X, y)
         end
         
         # Did we get a result?

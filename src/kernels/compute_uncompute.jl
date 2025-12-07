@@ -1,5 +1,3 @@
-
-# src/kernels/projected_kernel.jl
 using Yao
 using LinearAlgebra
 

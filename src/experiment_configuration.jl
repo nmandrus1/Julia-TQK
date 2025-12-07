@@ -80,7 +80,7 @@ DrWatson.default_prefix(c::QuantumPauliDataParams) = join(["pauli_data", join(c.
     n_qubits::Int
     n_features::Int = 2
     n_layers::Int
-    entanglement::EntanglementBlock = linear
+    entanglement::EntanglementStrategy = LinearEntanglement
     # for svm
     alpha_range::Tuple{Float64, Float64} = (1/(2π), 1.0)
     n_support_vectors::Int
