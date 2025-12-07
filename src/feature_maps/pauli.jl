@@ -1,176 +1,234 @@
 using Yao
+using YaoAPI
+using ArgCheck
 
-"""
-    PauliConfig
-    
-Immutable blueprint for a PauliFeatureMap Circuit.
-Stores the architecture and the 'wiring' of features to gates.
-"""
 struct PauliConfig <: AbstractFeatureMapConfig
-    n_features::Int
+    n_features::Int             # Corresponds to 'feature_dimension' in Qiskit
     reps::Int
-    paulis::Vector{String}
+    paulis::Vector{String}      # e.g., ["Z", "ZZ"]
     ent::EntanglementStrategy
+    alpha::Float64
+end
+
+# Default constructor to match Qiskit defaults
+function PauliConfig(n::Int, paulis::Vector{String}=["Z", "ZZ"]; 
+                     reps::Int=2, 
+                     ent::EntanglementStrategy=FullEntanglement, 
+                     alpha::Real=2.0)
+    return PauliConfig(n, reps, paulis, ent, alpha)
 end
 
 n_qubits(c::PauliConfig) = c.n_features
-n_trainable_params(c::PauliConfig) = 0
+n_trainable_params(c::PauliConfig) = 0 # Pauli Feature Map has no trainable weights
 
-# --- Helper: The Pauli Evolution Circuit (from previous step) ---
-"""
-    pauli_evolution_circuit(n::Int, pauli_string::String, theta::Real)
+# --- Pure Helper: Entanglement Index Generation ---
+# Matches Qiskit's `entanglement.get_entanglement` logic
+function get_entanglement_indices(n_qubits::Int, block_size::Int, strategy::EntanglementStrategy)
+    # If block_size is 1, it always applies to every qubit individually
+    if block_size == 1
+        return [[i] for i in 1:n_qubits]
+    end
 
-Generates the circuit for exp(-i * theta/2 * P).
-Matches Qiskit's `PauliEvolutionGate` logic.
-"""
-function pauli_evolution_circuit(n::Int, pauli_string::String, theta::Real)
-    # Parse string: Qiskit strings are reversed (index 0 is rightmost).
-    # We map string index i (from right) to Julia qubit index i+1.
-    active_ops = []
-    reversed_s = reverse(pauli_string) # Handle Qiskit's little-endian string
-    
-    for (i, char) in enumerate(reversed_s)
-        if char != 'I'
-            push!(active_ops, (i, char)) # i is 1-based index in Julia
+    # If block_size == n_qubits, only one block covers everything
+    if block_size == n_qubits
+        return [collect(1:n_qubits)]
+    end
+
+    indices = Vector{Vector{Int}}()
+
+    if strategy == LinearEntanglement
+        # [1, 2], [2, 3], ...
+        for i in 1:(n_qubits - 1)
+            # Generate block [i, i+1, ... i+block_size-1]
+            # Must check bounds (Qiskit linear usually just does nearest neighbor chains if block_size=2)
+            # For general block_size k: i, i+1, ..., i+k-1
+            if i + block_size - 1 <= n_qubits
+                push!(indices, collect(i:(i + block_size - 1)))
+            end
+        end
+
+    elseif strategy == CircularEntanglement
+        # Linear + wrapping boundaries
+        for i in 1:n_qubits
+            block = Int[]
+            for j in 0:(block_size - 1)
+                # 1-based wrapping: (i + j - 1) % n + 1
+                val = ((i + j - 1) % n_qubits) + 1
+                push!(block, val)
+            end
+            push!(indices, block)
+        end
+
+    elseif strategy == FullEntanglement
+        # All combinations of size `block_size`
+        # Using Julia's Combinatorics would be standard, but let's do a simple 2-qubit case
+        # (which is 99% of use cases) manually to stay dependency-free if possible.
+        if block_size == 2
+            for i in 1:n_qubits
+                for j in (i + 1):n_qubits
+                    push!(indices, [i, j])
+                end
+            end
+        else
+             # Fallback for >2 (Simple sliding window or similar if Combinatorics not avail)
+             # Qiskit 'full' for k>2 implies all k-subsets. 
+             # For simplicity in this snippet, we default to Linear if k > 2 to avoid huge complexity 
+             # without external libs, or assume standard Z/ZZ usage.
+             # *Strictly* for Z/ZZ (size 1 and 2), the above covers it.
+             return get_entanglement_indices(n_qubits, block_size, LinearEntanglement)
         end
     end
     
-    if isempty(active_ops)
-        return chain(n)
-    end
-    
-    indices = [x[1] for x in active_ops]
-    gates   = [x[2] for x in active_ops]
-    
-    # 1. Basis Change
-    basis_change = chain(n)
-    for (idx, gate_char) in zip(indices, gates)
-        if gate_char == 'X'
-            push!(basis_change, put(n, idx => H))
-        elseif gate_char == 'Y'
-            push!(basis_change, put(n, idx => Rx(π/2))) # Y -> Z basis
-        end
-    end
-    
-    # 2. CNOT Ladder (Parity)
-    parity_ladder = chain(n)
-    for k in 1:(length(indices) - 1)
-        push!(parity_ladder, cnot(indices[k], indices[k+1]))
-    end
-    
-    # 3. Rotation
-    # The rotation Rz(theta) implements exp(-i * theta/2 * Z)
-    target_qubit = indices[end]
-    central_rot = put(n, target_qubit => Rz(theta))
-    
-    # 4. Construct Full Block (Uncompute automatically via adjoint)
-    return chain(
-        basis_change,
-        parity_ladder,
-        central_rot,
-        parity_ladder',
-        basis_change'
-    )
+    return indices
 end
 
-# --- Helper: Default Data Mapping Function ---
-"""
-    qiskit_default_data_map(x::Vector, indices::Vector{Int})
 
-Replicates Qiskit's default non-linear data map:
-- If |S| = 1: x_i
-- If |S| > 1: Π (π - x_j) for j in S
-"""
-function qiskit_default_data_map(x::AbstractVector, indices::Vector{Int})
+# --- Pure Helper: Data Mapping ---
+# Matches Rust `_default_reduce`
+function qiskit_data_map(x::AbstractVector, indices::Vector{Int})
     if length(indices) == 1
         return x[indices[1]]
     else
-        val = 1.0
-        for idx in indices
-            val *= (π - x[idx])
-        end
-        return val
+        return mapreduce(i -> (π - x[i]), *, indices; init=1.0)
     end
 end
 
-# --- Main Function: PauliFeatureMap ---
-"""
-    pauli_feature_map(n_qubits::Int, x::Vector, paulis::Vector{String}; 
-                      reps::Int=2, alpha::Real=2.0)
+# --- Pure Helper: Native Gates ---
+function make_1q_gate(n::Int, idx::Int, gate_char::Char, theta::Real)
+    if gate_char == 'X'
+        return put(n, idx => Rx(theta))
+    elseif gate_char == 'Y'
+        return put(n, idx => Ry(theta))
+    elseif gate_char == 'Z'
+        return put(n, idx => Rz(theta))
+    else
+        return chain(n)
+    end
+end
 
-Constructs a Yao.jl block identical to Qiskit's PauliFeatureMap.
+function make_2q_gate(n::Int, idx1::Int, idx2::Int, gate_str::String, theta::Real)
+    if gate_str == "XX"
+        return rot(kron(n, idx1=>X, idx2=>X), theta)
+    elseif gate_str == "YY"
+        return rot(kron(n, idx1=>Y, idx2=>Y), theta)
+    elseif gate_str == "ZZ"
+        return rot(kron(n, idx1=>Z, idx2=>Z), theta)
+    elseif gate_str == "ZX"
+        return rot(kron(n, idx1=>Z, idx2=>X), theta)
+    elseif gate_str == "XZ"
+        return rot(kron(n, idx1=>X, idx2=>Z), theta)
+    else
+        return nothing 
+    end
+end
 
-Arguments:
-- `n_qubits`: Number of qubits (feature dimension).
-- `x`: The classical data vector (should match n_qubits).
-- `paulis`: List of Pauli strings (e.g. ["Z", "ZZ"]). 
-            Note: Uses Qiskit string ordering (rightmost char is q0).
-- `reps`: Number of circuit repetitions (default: 2).
-- `alpha`: Scaling factor for rotations (default: 2.0).
-"""
-function pauli_feature_map(n_qubits::Int, x::AbstractVector, paulis::Vector{String}; 
-                           reps::Int=2, alpha::Real=2.0)
+# --- Pure Helper: Basis Changes ---
+function basis_change_layer(n::Int, indices::Vector{Int}, gates::Vector{Char})
+    ops = map(zip(indices, gates)) do (idx, g)
+        if g == 'X'
+            put(n, idx => H)
+        elseif g == 'Y'
+            put(n, idx => Rx(π/2)) # SX
+        else
+            chain(n) # Identity
+        end
+    end
+    return chain(n, ops...)
+end
+
+function inv_basis_change_layer(n::Int, indices::Vector{Int}, gates::Vector{Char})
+    ops = map(zip(indices, gates)) do (idx, g)
+        if g == 'X'
+            put(n, idx => H)
+        elseif g == 'Y'
+            put(n, idx => Rx(-π/2)) # SXdg
+        else
+            chain(n)
+        end
+    end
+    return chain(n, ops...)
+end
+
+# --- Pure Helper: Evolution Block ---
+# Now accepts explicit `indices` and `pauli_type` (e.g. "ZZ")
+function pauli_evolution_block(n::Int, indices::Vector{Int}, pauli_type::String, theta::Real)
     
-    # Initialize the circuit chain
-    # Standard Qiskit structure: [H layer] -> [Evolutions] -> [H layer] -> [Evolutions] ...
-    full_circuit = chain(n_qubits)
+    k = length(indices)
+    gates = collect(pauli_type) # ['Z', 'Z']
+
+    # Case 1: Single Qubit
+    if k == 1
+        return make_1q_gate(n, indices[1], gates[1], theta)
+    end
+
+    # Case 2: Two Qubit (Try Native)
+    if k == 2
+        native_gate = make_2q_gate(n, indices[1], indices[2], pauli_type, theta)
+        if !isnothing(native_gate)
+            return native_gate
+        end
+    end
+
+    # Case 3: General N-Qubit
+    basis = basis_change_layer(n, indices, gates)
     
-    for _ in 1:reps
-        # 1. Hadamard Layer (applied at start of every repetition)
-        push!(full_circuit, repeat(n_qubits, H, 1:n_qubits))
+    # Linear CNOT Ladder
+    ladder_ops = [cnot(indices[i], indices[i+1]) for i in 1:(k-1)]
+    ladder = chain(n, ladder_ops...)
+    
+    # Rotation on last qubit
+    target_qubit = indices[end]
+    rot_op = put(n, target_qubit => Rz(theta))
+    
+    inv_basis = inv_basis_change_layer(n, indices, gates)
+
+    return chain(basis, ladder, rot_op, ladder', inv_basis)
+end
+
+
+function pauli_feature_map(n_qubits::Int, x::AbstractVector, paulis::Vector{String}, 
+                           reps::Int, ent::EntanglementStrategy, alpha::Real)
+    
+    # Pure map over repetitions
+    layers = map(1:reps) do rep_idx
+        
+        # 1. Hadamard Layer
+        h_layer = repeat(n_qubits, H, 1:n_qubits)
         
         # 2. Evolution Layer
-        for p_str in paulis
-            # Identify active indices for this pauli string
-            # (Need to parse again to get indices for data mapping)
-            rev_s = reverse(p_str)
-            active_indices = [i for (i, c) in enumerate(rev_s) if c != 'I']
+        # Iterate over Pauli Types (e.g., "Z", then "ZZ")
+        type_blocks = map(paulis) do p_type
             
-            # Skip Identity strings
-            if isempty(active_indices)
-                continue
+            # A. Get indices for this type and strategy
+            # Note: Qiskit allows rotation of entanglement per rep, but standard is static.
+            # We use the static logic here for simplicity.
+            active_indices_list = get_entanglement_indices(n_qubits, length(p_type), ent)
+            
+            # B. Build blocks for each set of indices (e.g., Z on 1, Z on 2...)
+            blocks = map(active_indices_list) do indices
+                
+                # Calculate Angle using Data Map on specific indices
+                phi_val = qiskit_data_map(x, indices)
+                theta = alpha * phi_val
+                
+                # Create Block
+                pauli_evolution_block(n_qubits, indices, p_type, theta)
             end
             
-            # Calculate rotation angle using data map
-            # Qiskit logic: angle = alpha * data_map(x)
-            phi_val = qiskit_default_data_map(x, active_indices)
-            theta = alpha * phi_val
-            
-            # Generate and push the evolution block
-            evol_block = pauli_evolution_circuit(n_qubits, p_str, theta)
-            push!(full_circuit, evol_block)
+            # Chain all blocks for this Pauli Type together
+            chain(blocks...)
         end
+        
+        # Combine H layer + All Evolution blocks for this rep
+        chain(h_layer, type_blocks...)
     end
-    
-    return full_circuit
-end
 
+    return chain(layers...)
+end
 
 """
     build_circuit(config, params, x)
-
-The 'Circuit Factory'. 
-Pure function: Input -> Output. No side effects. 
-Zygote can differentiate this because it just sees array math and struct construction.
-
-NOTE: PauliFeatureMap has no trainable parameters, so `params` argument is ignored
 """
 function build_circuit(config::PauliConfig, params::AbstractVector, x::AbstractVector)
-    return pauli_feature_map(config.n_features, x, config.paulis; reps=config.reps)
+    return pauli_feature_map(config.n_features, x, config.paulis, config.reps, config.ent, config.alpha)
 end
-
-# --- Usage Example for Research ---
-
-# 1. Define inputs
-n = 3
-x_data = [0.1, 0.2, 0.3]
-# Standard "ZZFeatureMap" equivalent: Z on each, then ZZ interactions
-pauli_list = ["ZII", "IZI", "IIZ", "ZZI", "ZIZ", "IZZ"] 
-
-# 2. Build the circuit
-# This returns a specific circuit encoded with the data `x_data`
-qc = pauli_feature_map(n, x_data, pauli_list, reps=2)
-
-# 3. Verify parameters or use in Kernel
-println("Circuit Depth (Blocks): ", length(qc))
-println(qc)

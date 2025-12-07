@@ -56,6 +56,7 @@ end
     n_reps::Int = 2
     search_iterations::Int = 20
     constraints::PauliSearchConstraints = PauliSearchConstraints()
+    rng::AbstractRNG
 end
 
 # Reuploading Blueprint: "I will gradient descend this architecture"
