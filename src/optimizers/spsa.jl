@@ -1,5 +1,3 @@
-
-# src/optimizers/spsa.jl
 using LinearAlgebra
 using Random
 using StableRNGs
@@ -10,7 +8,6 @@ using StableRNGs
 Stores the hyperparameters for the SPSA optimizer.
 """
 struct SPSAConfig
-    rng::AbstractRNG
     max_iter::Int
     a::Float64  # Learning rate numerator
     c::Float64  # Perturbation numerator
@@ -21,7 +18,6 @@ end
 
 # Standard defaults often used in Qiskit/PennyLane
 function SPSAConfig(;
-    seed::Integer,
     max_iter::Int=100,
     a::Float64=0.628,
     c::Float64=0.2,
@@ -31,15 +27,15 @@ function SPSAConfig(;
 )
     # The inner constructor call must use positional arguments
     # matching the struct's definition order.
-    return SPSAConfig(StableRNG(seed), max_iter, a, c, A, alpha, gamma)
+    return SPSAConfig(max_iter, a, c, A, alpha, gamma)
 end
 
 """
-    optimize_spsa(loss_function, initial_params, config::SPSAConfig)
+    optimize_spsa(loss_function, initial_params, config::SPSAConfig, rng::AbstractRNG)
 
 Minimizes 'loss_function(params)' using SPSA.
 """
-function optimize_spsa(loss_fn::Function, init_params::Vector{Float64}, config::SPSAConfig)
+function optimize_spsa(loss_fn::Function, init_params::Vector{Float64}, config::SPSAConfig, rng::AbstractRNG)
     params = copy(init_params)
     n_params = length(params)
     history = Float64[]
@@ -50,7 +46,7 @@ function optimize_spsa(loss_fn::Function, init_params::Vector{Float64}, config::
         c_k = config.c / k^config.gamma
         
         # 2. Generate Perturbation Vector (Bernoulli +/- 1)
-        delta = rand(config.rng, [-1.0, 1.0], n_params)
+        delta = rand(rng, [-1.0, 1.0], n_params)
         
         # 3. Evaluate two points
         theta_plus = params .+ c_k .* delta

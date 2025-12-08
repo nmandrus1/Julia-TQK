@@ -23,9 +23,10 @@ function derive_rng(source_seed::UInt, step_salt::Int)
 end
 
 # defined "Salts" for different pipeline stages to avoid magic numbers
-const SALT_DATA_GEN::Int = 1001
-const SALT_TUNING::Int   = 2002
-const SALT_SVM_CV::Int   = 3003
+const SALT_DATAGEN::Int    = 1001 
+const SALT_SAMPLING::Int    = 2002 # When tuning, this RNG controls how batches are sampled 
+const SALT_OPTIMIZER::Int   = 3003 # When tuning, this RNG controls changes to the model
+const SALT_SVM_CV::Int      = 4004
 
 # ==========================================
 # 1. Data Configuration
@@ -42,7 +43,6 @@ Configuration for the 'Teacher' dataset generation.
     n_samples::Int = 100
     n_features::Int = 2
     test_size::Float64 = 0.2
-    seed::Int = 42  # This seed is specific to the DATA GENERATION step
     params::P
 end
 
@@ -58,19 +58,19 @@ DrWatson.default_prefix(c::DataConfig) = c.dataset_name
 end
 
 @kwdef struct QuantumPauliDataParams <: AbstractDataParams
-    n_qubits::Int
+    n_features::Int
     paulis::Vector{String}
     reps::Int = 2
-    entanglement::String = "linear"
-    gap::Float64 = 0.1
-    grid_points_per_dim::Int = 20
+    ent::EntanglementStrategy = LinearEntanglement
+    n_support_vectors::Int = 20
+    alpha_range::Tuple{Float64, Float64} = (0.1, 2.0)
 end
 
 @kwdef struct ReuploadingDataParams <: AbstractDataParams
     n_qubits::Int
     n_features::Int
     n_layers::Int
-    entanglement::String = "linear"
+    ent::EntanglementStrategy = LinearEntanglement
     n_support_vectors::Int = 20
     alpha_range::Tuple{Float64, Float64} = (0.1, 2.0)
 end
@@ -108,7 +108,7 @@ end
 @kwdef struct ReuploadingMethod <: AbstractKernelMethod
     name::String = "reuploading"
     circuit_config::ReuploadingConfig # Defined in src/feature_maps/types.jl
-    optimizer::SPSAConfig = SPSAConfig(seed=0) # Seed will be overwritten by pipeline
+    optimizer::SPSAConfig = SPSAConfig() # Seed will be overwritten by pipeline
 end
 
 

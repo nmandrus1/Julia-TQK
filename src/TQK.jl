@@ -31,17 +31,9 @@ include("kernels/compute_uncompute.jl")
 
 include("utils/mock_hardware.jl")
 
-
-# include("qiskit/qiskit_interface.jl")
-# include("qiskit/pauli_search.jl")
-# include("rbf/rbf_search.jl")
-# include("reupload_hyperparam_search.jl")
-
 # # data generation
-include("data_generation/quantum_data.jl")
-include("data_generation/rbf_data.jl")
 include("data_generation/load_data.jl")
-include("data_generation/reupload_data.jl")
+include("data_generation/generic.jl")
 
 
 # Export types
@@ -82,7 +74,7 @@ export optimize_spsa
 export tune_kernel, tune_svm_c
 
 # experiment running
-export derive_rng, SALT_DATA_GEN, SALT_SVM_CV, SALT_TUNING
+export derive_rng, SALT_DATAGEN, SALT_SVM_CV, SALT_SAMPLING, SALT_OPTIMIZER
 export produce_data
 
 # Pauli Feature Map Functions

@@ -44,7 +44,8 @@ end
 Performs Random Search over the space of valid Pauli strings to maximize KTA.
 """
 function tune_kernel(method::PauliMethod, X::AbstractMatrix, y::AbstractVector, config::TuningConfig)
-    rng = config.rng # Use the derived RNG
+    sample_rng = config.sampling_rng # Use the derived RNG
+    optimizer_rng = config.optimizer_rng # Use the derived RNG
     best_kta = -Inf
     
     # Default fallback
@@ -53,7 +54,7 @@ function tune_kernel(method::PauliMethod, X::AbstractMatrix, y::AbstractVector, 
 
     for i in 1:method.search_iterations
         # 1. Sample Structure using the derived RNG
-        current_paulis = generate_constrained_pauli_set(method.constraints; rng=rng)
+        current_paulis = generate_constrained_pauli_set(method.constraints; rng=optimizer_rng)
         
         # 2. Define Kernel Function Closure
         # compute_pauli_kernel_matrix must be defined in your feature_maps/pauli.jl
@@ -67,7 +68,7 @@ function tune_kernel(method::PauliMethod, X::AbstractMatrix, y::AbstractVector, 
         kernel_func(data) = compute_kernel_matrix_pure(config, data)
         
         # 3. Compute Score (Batched or Full)
-        score = compute_batched_kta(kernel_func, X, y, config.batch_size, rng)
+        score = compute_batched_kta(kernel_func, X, y, config.batch_size, sample_rng)
         push!(history, score)
         
         if score > best_kta

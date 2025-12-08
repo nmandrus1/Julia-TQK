@@ -9,9 +9,18 @@ using StableRNGs
 Controls the execution of the kernel tuning process (not the hyperparameters themselves).
 Allows for batched KTA calculation to speed up optimization on large datasets or slow hardware.
 """
+
+"""
+    TuningConfig
+
+- `sampling_rng`: Used ONLY for selecting data batches.
+- `optimizer_rng`: Used for algorithm stochasticity (e.g., SPSA perturbations).
+- `batch_size`:  0 = Full dataset. >0 = Random batch per step.
+"""
 @kwdef struct TuningConfig
-    rng::AbstractRNG
-    batch_size::Int = 0    # 0 = Full dataset. >0 = Random batch per step.
+    sampling_rng::AbstractRNG
+    optimizer_rng::AbstractRNG
+    batch_size::Int = 0 
 end
 
 """

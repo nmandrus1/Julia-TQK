@@ -1,6 +1,8 @@
 using Distances
 
 function tune_kernel(config::RBFMethod, X, y)
+    @warn "RBF TUNING IS NOT BATCHED"
+
     best_kta = -Inf
     best_gamma = 0.1
     

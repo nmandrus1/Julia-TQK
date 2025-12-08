@@ -53,6 +53,22 @@ function compute_kernel_matrix_pure(config::AbstractFeatureMapConfig, params::Ab
     return K
 end
 
+"""
+    compute_kernel_matrix_pure(config, params, X, Y)
+
+Computes Cross-Kernel Matrix K(X, Y).
+"""
+function compute_kernel_matrix_pure(config::AbstractFeatureMapConfig, params::AbstractVector, X::AbstractMatrix, Y::AbstractMatrix)
+    states_x = compute_statevectors(config, params, X)
+    states_y = compute_statevectors(config, params, Y)
+    
+    S_x = hcat(state.(states_x)...)
+    S_y = hcat(state.(states_y)...)
+    
+    # G_ij = <x_i | y_j>
+    G = S_x' * S_y
+    return abs2.(G)
+end
 
 """
     kernel_target_alignment(K, y)

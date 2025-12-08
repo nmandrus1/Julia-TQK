@@ -1,18 +1,12 @@
 using DrWatson
 @quickactivate "TQK"
 
-using DataFrames
-using JLD2
-using Dates
-using Statistics
-using PythonCall
+using TQK
 using LIBSVM
-using Printf
 using Distances
 
-# ============================================================================
-# KERNEL NAMING & IDENTIFICATION
-# ============================================================================
+include("experiment_registry_refactored.jl")
+
 
 """
 Generate unique identifier for a kernel configuration.
@@ -27,7 +21,8 @@ function kernel_identifier(config::KernelHyperparameterSearchConfig)
             kernel = :reup,
             q = config.n_qubits,
             l = config.n_layers,
-            ent = config.entanglement
+            ent = config.entanglement,
+            lr = config.learning_rate
         )
         return savename(params, connector="_")
     end
@@ -49,137 +44,8 @@ function parse_kernel_id(kid::String)
     end
 end
 
-# ============================================================================
-# REGISTRY MANAGEMENT
-# ============================================================================
 
-"""
-Load or create master registry.
-"""
-function load_registry()
-    registry_path = datadir("experiments", "master_registry.jld2")
-    
-    if isfile(registry_path)
-        return load(registry_path, "registry")
-    else
-        # Create empty registry with proper schema
-        return DataFrame(
-            experiment_id = String[],
-            status = Symbol[],
-            created_at = DateTime[],
-            completed_at = Union{DateTime, Missing}[],
-            dataset_type = String[],
-            dataset_params = Dict[],
-            n_samples = Int[],
-            n_features = Int[],
-            data_seed = Int[],
-            tested_kernels = Vector{String}[],
-            learning_curve_sizes = Vector{Int}[],
-            data_path = String[],
-            result_path = String[]
-        )
-    end
-end
 
-"""
-Save registry atomically.
-"""
-function save_registry!(registry::DataFrame)
-    registry_path = datadir("experiments", "master_registry.jld2")
-    mkpath(dirname(registry_path))
-    wsave(registry_path, @dict registry)
-end
-
-"""
-Add experiment to registry.
-"""
-
-"""
-Add experiment to registry.
-"""
-function register_experiment!(registry::DataFrame, exp_config::ExperimentConfig)
-    exp_id = exp_config.experiment_name
-    
-    # Check if exists
-    if exp_id in registry.experiment_id
-        @warn "Experiment $exp_id already registered"
-        return exp_id
-    end
-    
-    # Create result directory
-    result_path = datadir("experiments", "results", exp_id)
-    mkpath(result_path)
-    
-    # Add row
-    push!(registry, Dict(
-        :experiment_id => exp_id,
-        :status => :pending,
-        :created_at => now(),
-        :completed_at => missing,
-        :dataset_type => string(exp_config.data_config.data_params.dataset_type),
-        # Convert the struct to a Dict before pushing
-        :dataset_params => DrWatson.struct2dict(exp_config.data_config.data_params),
-        :n_samples => exp_config.data_config.n_samples,
-        :n_features => exp_config.data_config.n_features,
-        :data_seed => exp_config.data_config.seed,
-        :tested_kernels => [kernel_identifier(exp_config.kernel_config)],
-        :learning_curve_sizes => exp_config.learning_curve_sizes,
-        :data_path => "",  # Will be filled after data generation
-        :result_path => result_path
-    ), cols=:union)
-    
-    save_registry!(registry)
-    return exp_id
-end
-
-"""
-Update experiment status and metrics.
-"""
-function update_experiment!(registry::DataFrame, exp_id::String; 
-                           status::Union{Symbol, Nothing}=nothing,
-                           data_path::Union{String, Nothing}=nothing,
-                           kernel_metrics::Union{Dict, Nothing}=nothing)
-    idx = findfirst(==(exp_id), registry.experiment_id)
-    
-    if !isnothing(status)
-        registry[idx, :status] = status
-        if status == :completed
-            registry[idx, :completed_at] = now()
-        end
-    end
-    
-    if !isnothing(data_path)
-        registry[idx, :data_path] = data_path
-    end
-    
-    if !isnothing(kernel_metrics)
-        for (kernel_id, metrics) in kernel_metrics
-            # Add columns dynamically if needed
-            col_test = Symbol("$(kernel_id)_best_test_acc")
-            col_train = Symbol("$(kernel_id)_best_train_acc")
-            
-            if !(col_test in names(registry))
-                registry[!, col_test] = Vector{Union{Float64, Missing}}(missing, nrow(registry))
-            end
-            if !(col_train in names(registry))
-                registry[!, col_train] = Vector{Union{Float64, Missing}}(missing, nrow(registry))
-            end
-            
-            registry[idx, col_test] = metrics[:best_test_acc]
-            registry[idx, col_train] = metrics[:best_train_acc]
-        end
-    end
-    
-    save_registry!(registry)
-end
-
-# ============================================================================
-# EXPERIMENT GRID GENERATION
-# ============================================================================
-
-"""
-Generate experiment grid with many reuploading configs.
-"""
 function generate_experiment_grid(;
     dataset_configs::Vector{<:DataConfig},
     reuploading_grid::Dict,
@@ -201,6 +67,7 @@ function generate_experiment_grid(;
                     n_features = data_config.n_features,
                     n_layers = params[:n_layers],
                     entanglement = params[:entanglement],
+                    # learning_rate = params[:learning_rate],
                     seed = data_config.seed
                 ))
             end
@@ -219,16 +86,17 @@ function generate_experiment_grid(;
             ))
         end
         
+        exp_name = savename(data_config)
+
         # Create experiment for each kernel on this dataset
         for (i, kernel_config) in enumerate(reup_configs)
             kernel_id = kernel_identifier(kernel_config)
-            exp_name = "$(savename(data_config))_$(kernel_id)"
             
             push!(experiments, ExperimentConfig(
                 experiment_name = exp_name,
                 data_config = data_config,
                 kernel_config = kernel_config,
-                learning_curve_sizes = collect(100:100:min(1000, data_config.n_samples)),
+                learning_curve_sizes = collect(100:250:data_config.n_samples),
                 seed = data_config.seed
             ))
         end
@@ -237,6 +105,11 @@ function generate_experiment_grid(;
     @info "Generated $(length(experiments)) experiments"
     return experiments
 end
+
+# ============================================================================
+# EXPERIMENT EXECUTION (UPDATED FOR LONG FORMAT)
+# ============================================================================
+
 
 # ============================================================================
 # HYPERPARAMETER SEARCH
@@ -353,40 +226,33 @@ function run_learning_curve(
     return results
 end
 
-# ============================================================================
-# MAIN EXPERIMENT EXECUTION
-# ============================================================================
 
 """
 Run single experiment: one dataset, one kernel.
 """
-function run_experiment!(registry::DataFrame, exp_config::ExperimentConfig)
+function run_experiment!(exp_config::ExperimentConfig)
     exp_id = exp_config.experiment_name
     kernel_id = kernel_identifier(exp_config.kernel_config)
     
-    @info "Running experiment: $exp_id"
+    @info "Running: $exp_id / $kernel_id"
     
-    # Register if new
-    if !(exp_id in registry.experiment_id)
-        register_experiment!(registry, exp_config)
-    end
-    
-    update_experiment!(registry, exp_id, status=:running)
+    # Register experiment and kernel
+    register_experiment!(exp_config)
+    register_kernel_result!(exp_id, kernel_id)
+    update_kernel_result!(exp_id, kernel_id, status=:running)
     
     try
         # 1. Generate/load data
         @info "Loading data..."
         data, data_path = prepare_data!(exp_config)
-        update_experiment!(registry, exp_id, data_path=data_path)
+        update_experiment_data_path!(exp_id, data_path)
         
         X_train = permutedims(data["X_train"])
         y_train = Vector(data["y_train"])
         
         # 2. Hyperparameter search (cached)
-        @info "Searching hyperparameters for $kernel_id..."
+        @info "Searching hyperparameters..."
         result_dir = datadir("experiments", "results", exp_id, kernel_id)
-        mkpath(result_dir)
-        
         hyperparam_file = joinpath(result_dir, "hyperparameters.jld2")
         
         if isfile(hyperparam_file)
@@ -394,7 +260,7 @@ function run_experiment!(registry::DataFrame, exp_config::ExperimentConfig)
             hyperparams = load(hyperparam_file, "hyperparams")
         else
             hyperparams, score = search_hyperparameters(X_train, y_train, exp_config)
-            @info "Best hyperparameters found (score: $score)"
+            @info "Best score: $score"
             wsave(hyperparam_file, @dict hyperparams score)
         end
         
@@ -405,24 +271,23 @@ function run_experiment!(registry::DataFrame, exp_config::ExperimentConfig)
         curves_file = joinpath(result_dir, "learning_curves.jld2")
         wsave(curves_file, @dict learning_curves)
         
-        # 4. Update registry with metrics
+        # 4. Update with metrics
         test_accs = [lc[:test_acc] for lc in values(learning_curves)]
         train_accs = [lc[:train_acc] for lc in values(learning_curves)]
+        sizes = [lc[:n_samples] for lc in values(learning_curves)]
         
         metrics = Dict(
-            kernel_id => Dict(
-                :best_test_acc => maximum(test_accs),
-                :best_train_acc => maximum(train_accs)
-            )
+            :best_test_acc => maximum(test_accs),
+            :best_train_acc => maximum(train_accs),
+            :final_train_size => maximum(sizes)
         )
         
-        update_experiment!(registry, exp_id, status=:completed, kernel_metrics=metrics)
-        
-        @info "Experiment $exp_id completed successfully"
+        update_kernel_result!(exp_id, kernel_id, status=:completed, metrics=metrics)
+        @info "Completed: $exp_id / $kernel_id"
         
     catch e
-        @error "Experiment $exp_id failed" exception=e
-        update_experiment!(registry, exp_id, status=:failed)
+        @error "Failed: $exp_id / $kernel_id" exception=e
+        update_kernel_result!(exp_id, kernel_id, status=:failed)
         rethrow(e)
     end
 end
@@ -431,108 +296,85 @@ end
 Run batch of experiments.
 """
 function run_experiments!(experiments::Vector{ExperimentConfig})
-    registry = load_registry()
-    
     for (i, exp_config) in enumerate(experiments)
         @info "Progress: $i/$(length(experiments))"
-        run_experiment!(registry, exp_config)
+        run_experiment!(exp_config)
     end
     
-    @info "All experiments complete"
+    @info "Complete. Summary:"
+    display(summarize_experiments())
 end
 
 # ============================================================================
-# RESULT LOADING & ANALYSIS
+# EXAMPLE USAGE
 # ============================================================================
 
 """
-Load detailed results for a specific kernel.
+Quick demo of query functions.
 """
-function load_kernel_results(exp_id::String, kernel_id::String)
-    result_dir = datadir("experiments", "results", exp_id, kernel_id)
+function demo_queries()
+    println("\n=== Experiment Statistics ===")
+    display(experiment_stats())
     
-    if !isdir(result_dir)
-        error("Results not found for $exp_id/$kernel_id")
-    end
+    println("\n=== Top 5 Experiments ===")
+    display(top_experiments(5))
     
-    hyperparams = load(joinpath(result_dir, "hyperparameters.jld2"))
-    curves = load(joinpath(result_dir, "learning_curves.jld2"))
+    println("\n=== Kernel Comparison ===")
+    display(compare_kernels())
     
-    return Dict(
-        :hyperparameters => hyperparams,
-        :learning_curves => curves
-    )
+    println("\n=== Summary by Experiment ===")
+    display(summarize_experiments())
+    
+    println("\n=== Find RBF Kernels ===")
+    display(find_experiments(kernel_id="rbf"))
 end
 
-"""
-Load all results for an experiment.
-"""
-function load_experiment_results(exp_id::String)
-    registry = load_registry()
-    row = registry[findfirst(==(exp_id), registry.experiment_id), :]
-    
-    results = Dict{String, Any}()
-    
-    for kernel_id in row.tested_kernels
-        results[kernel_id] = load_kernel_results(exp_id, kernel_id)
-    end
-    
-    return results
-end
+export run_experiment!, run_experiments!, demo_queries
 
-"""
-Query registry with filters.
-"""
-function query_registry(; kwargs...)
-    registry = load_registry()
-    
-    for (key, value) in kwargs
-        if key in names(registry)
-            if value isa Vector
-                registry = filter(row -> row[key] in value, registry)
-            else
-                registry = filter(row -> row[key] == value, registry)
-            end
-        end
-    end
-    
-    return registry
-end
-
-# ============================================================================
-# CONVENIENCE FUNCTIONS
-# ============================================================================
 
 """
 Quick start: generate and run small test.
 """
 function quick_test()
     # Single RBF dataset
-    data_config = DataConfig(
+    data_config1 = DataConfig(
         n_samples=500,
         n_features=2,
-        data_params=RBFDataParams(gamma=1.0, n_support_vectors=20),
+        data_params=RBFDataParams(gamma=2.0, n_support_vectors=10),
         seed=42
+    )
+
+    data_config2 = DataConfig(
+        n_samples=500,
+        n_features=2,
+        data_params=ReuploadingDataParams(
+            n_qubits=4,
+            n_features=2,
+            n_layers=4,
+            entanglement=all_to_all,
+            n_support_vectors=10,
+        ),
+        seed = 53
     )
     
     # Test 4 reuploading configs
     reup_grid = Dict(
-        :n_qubits => [2, 4],
-        :n_layers => [2],
-        :entanglement => ["linear"],
+        :n_qubits => [2, 4, 8],
+        :n_layers => [2, 4, 8],
+        :entanglement => ["linear", "all_to_all"],
     )
     
     experiments = generate_experiment_grid(
-        dataset_configs=[data_config],
+        dataset_configs=[data_config1, data_config2],
         reuploading_grid=reup_grid,
         test_rbf=true,
         test_pauli=true
     )
     
-    run_experiments!(experiments)
-    
-    return load_registry()
+    run_experiments!(experiments)    
+
 end
+
 
 """
 Full experiment suite.
@@ -541,44 +383,77 @@ function run_full_suite()
     # Multiple datasets
     rbf_configs = [
         DataConfig(
-            n_samples=1000,
+            n_samples=5000,
             n_features=2,
-            data_params=RBFDataParams(gamma=g, n_support_vectors=50),
+            data_params=RBFDataParams(gamma=2.0, n_support_vectors=nsv),
             seed=s
         )
-        for g in [0.1, 1.0, 10.0]
-        for s in [42, 123]
+        for nsv in [50]
+        for s in [42]
     ]
-    
-    quantum_configs = [
+
+    reuploading_2q_2l_configs = [
         DataConfig(
-            n_samples=1000,
+            n_samples=5000,
             n_features=2,
-            data_params=QuantumPauliDataParams(
-                n_qubits=2,
-                paulis=p,
-                reps=2,
-                entanglement="linear",
-                gap=0.3,
-                grid_points_per_dim=100
+            data_params=ReuploadingDataParams(
+                n_qubits=8,
+                n_features=2,
+                n_layers=4,
+                entanglement=all_to_all,
+                n_support_vectors=nsv,
             ),
-            seed=s
+            seed = s
         )
-        for p in [["Z", "ZZ"], ["X", "XY"]]
-        for s in [42, 123]
+        for nsv in [50]
+        for s in [42]
     ]
+
+    # reuploading_8q_8l_configs = [
+    #     DataConfig(
+    #         n_samples=5000,
+    #         n_features=2,
+    #         data_params=ReuploadingDataParams(
+    #             n_qubits=8,
+    #             n_features=2,
+    #             n_layers=8,
+    #             entanglement=all_to_all,
+    #             n_support_vectors=nsv,
+    #         ),
+    #         seed = s
+    #     )
+    #     for nsv in [10, 50]
+    #     for s in [42]
+    # ]    
+    # quantum_configs = [
+    #     DataConfig(
+    #         n_samples=5000,
+    #         n_features=2,
+
+    #         data_params=QuantumPauliDataParams(
+    #             n_qubits=2,
+    #             paulis=p,
+    #             reps=2,
+    #             entanglement=ent,
+    #             gap=0.3,
+    #             grid_points_per_dim=100
+    #         ),
+    #         seed=s
+    #     )
+    #     for (p, ent) in [(["ZZ"], "linear"), (["X", "XY"], "full")]
+    #     for s in [42]
+    # ]
     
     # Full reuploading grid
     reup_grid = Dict(
-        :n_qubits => [2, 4, 6, 8],
-        :n_layers => [2, 4, 6, 8],
-        :entanglement => ["linear", "all_to_all"],
-        :optimizer => ["LBFGS"],
-        :max_iterations => [100]
+        :n_qubits => [8],
+        :n_layers => [4],
+        :entanglement => ["linear"],
     )
     
     experiments = generate_experiment_grid(
-        dataset_configs=vcat(rbf_configs, quantum_configs),
+        # dataset_configs=vcat(rbf_configs, reuploading_2q_2l_configs, reuploading_8q_8l_configs),
+        dataset_configs=vcat(rbf_configs, reuploading_2q_2l_configs),
         reuploading_grid=reup_grid,
         test_rbf=true,
         test_pauli=true
@@ -588,9 +463,3 @@ function run_full_suite()
     
     run_experiments!(experiments)
 end
-
-# Export
-export load_registry, save_registry!, register_experiment!, update_experiment!
-export generate_experiment_grid, run_experiment!, run_experiments!
-export load_kernel_results, load_experiment_results, query_registry
-export quick_test, run_full_suite
