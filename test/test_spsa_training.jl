@@ -26,7 +26,7 @@ end
         # Target: [1.0, 1.0]
         quad_loss(x) = sum((x .- 1.0).^2)
         
-        config = SPSAConfig(max_iter=300, a=1.0, c=0.1, A=10.0)
+        config = SPSAConfig(seed=42, max_iter=300, a=1.0, c=0.1, A=10.0)
         init_params = [0.0, 0.0]
         
         final_params, history = optimize_spsa(quad_loss, init_params, config)
@@ -99,7 +99,7 @@ end
         start_true_loss = true_loss(params)
         
         # Run SPSA
-        spsa_conf = SPSAConfig(max_iter=50, a=1.0, c=0.1)
+        spsa_conf = SPSAConfig(seed=42, max_iter=50, a=1.0, c=0.1)
         final_params, history = optimize_spsa(noisy_loss, params, spsa_conf)
         
         end_true_loss = true_loss(final_params)

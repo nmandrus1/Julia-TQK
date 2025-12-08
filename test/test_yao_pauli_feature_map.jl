@@ -4,8 +4,27 @@ using Test
 using PythonCall
 using LinearAlgebra
 using Random
+using Zygote
 
 # --- 1. Qiskit Interop Helper ---
+
+
+"""
+    finite_difference_gradient(f, x; ε=1e-5)
+
+Computes the gradient of scalar function f at x using central finite differences.
+"""
+function finite_difference_gradient(f, x::Float64; ε=1e-5)
+    # Perturb +ε
+    y_plus = f(x + ε)
+    # Perturb -ε
+    y_minus = f(x - ε)
+    
+    # Central difference
+    grad = (y_plus - y_minus) / (2ε)
+    return grad
+end
+
 
 """
     get_qiskit_matrix(config, x)
@@ -307,4 +326,54 @@ end
         @test check_unitary_equivalence(U_yao, U_qiskit)
     end
 
+    # --- 2. The Verification Test ---
+    @testset "Pauli KTA Gradient Verification" begin
+        # Data Setup
+        n_qubits = 2
+        n_samples = 4
+        X = rand(n_samples, n_qubits) # Random features
+        y = sign.(randn(n_samples))   # Random labels (+1/-1)
+    
+        # Initial Alpha (The parameter we want to optimize)
+        alpha_init = 2.0
+    
+        # Define Loss Function w.r.t Alpha
+        # We must reconstruct the config inside the function so Zygote sees 
+        # 'a' as a variable entering the graph.
+        function loss_fn(a)
+            c = PauliConfig(n_qubits, ["Z", "ZZ"]; reps=1, alpha=a)
+            # Pass empty [] for params, as standard Pauli has no trainable weights yet
+            return variational_kta_loss(c, [], X, y)
+        end
+
+        println("\n--- Starting KTA Gradient Check ---")
+
+        # 1. Forward Pass
+        loss_val = loss_fn(alpha_init)
+        println("Forward Loss (Negative KTA): $loss_val")
+        @test isa(loss_val, Real)
+
+        # 2. Zygote Gradient
+        println("Computing Zygote Gradient...")
+        grad_zygote = Zygote.gradient(loss_fn, alpha_init)[1]
+        println(" -> Zygote Grad: $grad_zygote")
+    
+        # 3. Finite Difference Gradient
+        println("Computing Finite Difference Gradient...")
+        grad_fd = finite_difference_gradient(loss_fn, alpha_init)
+        println(" -> FiniteDiff Grad: $grad_fd")
+
+        # 4. Comparison
+        # We use reasonable tolerances for floating point arithmetic
+        @test isapprox(grad_zygote, grad_fd; rtol=1e-4, atol=1e-4)
+    
+        diff = abs(grad_zygote - grad_fd)
+        println("Absolute Difference: $diff")
+    
+        if diff < 1e-4
+            println("SUCCESS: Gradients match! The pipeline is differentiable.")
+        else
+            println("FAILURE: Gradients diverge.")
+        end
+    end
 end

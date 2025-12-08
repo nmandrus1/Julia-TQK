@@ -16,7 +16,7 @@ function compute_statevectors(config::AbstractFeatureMapConfig, params::Abstract
     function make_state(i)
         x_row = view(X, i, :)
         circ = build_circuit(config, params, x_row)
-        return apply(zero_state(config.n_qubits), circ)
+        return apply(zero_state(n_qubits(config)), circ)
     end
 
     # 2. Map over all samples

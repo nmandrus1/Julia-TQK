@@ -65,6 +65,7 @@ export ExperimentConfig
 export n_qubits, n_trainable_params, build_circuit
 
 # kernel matrix computatoins
+export compute_statevectors
 export compute_kernel_matrix_hardware, compute_kernel_matrix_pure, compute_fidelity_hardware_compatible
 
 export kernel_target_alignment
