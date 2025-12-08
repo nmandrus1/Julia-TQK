@@ -9,13 +9,13 @@ Maps a batch of data X (size N x Features) to a list of statevectors.
 This is the "Forward Pass" of your quantum model.
 """
 function compute_statevectors(config::AbstractFeatureMapConfig, params::AbstractVector, X::AbstractMatrix)
-    n_samples = size(X, 1)
+    n_samples = size(X, 2)
     
     # 1. Define a helper that processes a single row
     #    Zygote can differentiate through this closure easily.
     function make_state(i)
-        x_row = view(X, i, :)
-        circ = build_circuit(config, params, x_row)
+        x_col = view(X, :, i)
+        circ = build_circuit(config, params, x_col)
         return apply(zero_state(n_qubits(config)), circ)
     end
 

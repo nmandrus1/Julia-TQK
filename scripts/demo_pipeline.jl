@@ -24,14 +24,14 @@ function run_demo()
     # Student: Reuploading Quantum Kernel
     method_conf = ReuploadingMethod(
         name="student_reup",
-        circuit_config=ReuploadingConfig(2, 2, 2; entanglement=LinearEntanglement),
-        optimizer=SPSAConfig(max_iter=20, seed=0)
+        circuit_config=ReuploadingConfig(2, 2, 2; entanglement=FullEntanglement),
+        optimizer=SPSAConfig(max_iter=200, seed=0)
     )
 
     # Master Config
     exp_config = ExperimentConfig(
         name="demo_run",
-        master_seed=UInt(999),
+        master_seed=UInt(998),
         data_config=data_conf,
         method=method_conf,
         tuning_batch_size=50, # Force batching to test it
@@ -56,7 +56,7 @@ function run_demo()
     println("-> Tuning Kernel (Method: $(typeof(method_conf)))...")
     
     # Derive RNG for tuning
-    rng_tuning = derive_rng(exp_config.master_seed, 2002) # SALT_TUNING
+    rng_tuning = derive_rng(exp_config.master_seed, SALT_TUNING) # SALT_TUNING
     tune_conf = TQK.TuningConfig(rng=rng_tuning, batch_size=exp_config.tuning_batch_size)
 
     # EXECUTE GENERIC TUNING
@@ -74,7 +74,8 @@ function run_demo()
     K_test  = compute_final_matrix(result.best_params, X_test) # Note: needs (param, X_test, X_train) in real impl usually
 
     println("-> Tuning SVM C...")
-    c_best, acc_cv, _ = tune_svm_c(K_train, y_train, exp_config.c_grid; cv_folds=exp_config.cv_folds)
+    rng_svm_tuning = derive_rng(exp_config.master_seed, SALT_SVM_CV)
+    c_best, acc_cv, _ = tune_svm_c(K_train, y_train, exp_config.c_grid; cv_folds=exp_config.cv_folds, rng=rng_svm_tuning)
     println("   Best C: $c_best, CV Acc: $acc_cv")
 
     # ---------------------------------------------------------
@@ -99,6 +100,7 @@ function run_demo()
     # println("   Saved to: $path")
     
     println("\n=== Demo Complete ===")
+    return artifacts
 end
 
 # Run it

@@ -8,16 +8,16 @@ using StableRNGs
 
 Finds the best C parameter using Cross-Validation on a precomputed kernel matrix.
 """
-function tune_svm_c(K_train::AbstractMatrix, y_train::AbstractVector, c_grid::Vector{Float64}; cv_folds=5, seed=42)
+function tune_svm_c(K_train::AbstractMatrix, y_train::AbstractVector, c_grid::Vector{Float64}; cv_folds=5, rng::AbstractRNG)
     best_c = c_grid[1]
     best_acc = -1.0
     results = Dict{Float64, Float64}()
-    rng = StableRNG(seed=seed)
 
     # Pre-compute CV folds to ensure consistency across C values
     # We use MLUtils.kfolds or similar manual indexing for precomputed kernels
     n_samples = length(y_train)
-    fold_indices = collect(MLUtils.kfolds(n_samples, k=cv_folds, shuffle=true, rng=rng))
+    indices = [i for i in 1:n_samples]
+    fold_indices = collect(MLUtils.kfolds(shuffleobs(rng, indices), k=cv_folds))
 
     for c in c_grid
         fold_accuracies = Float64[]

@@ -1,38 +1,21 @@
-using StableRNGs
+using Distances
 
-function tune_kernel(method::RBFMethod, X::AbstractMatrix, y::AbstractVector, config::TuningConfig)
-    rng = StableRNG(seed=config.seed)
-    
+function tune_kernel(config::RBFMethod, X, y)
     best_kta = -Inf
-    best_gamma = method.gamma_grid[1]
-    history = Float64[]
+    best_gamma = 0.1
     
-    # Optimization: Precompute distance matrix if possible? 
-    # Actually, for batched KTA, precomputing full D is wasteful if batch is small.
-    # We will just iterate.
+    # [CORRECTION] Compute distances column-wise (dims=2)
+    # This matrix is (N_samples x N_samples)
+    D2 = pairwise(SqEuclidean(), X, dims=2) 
     
-    for g in method.gamma_grid
-        # Closure for the current kernel
-        kernel_func(data) = rbf_kernel_matrix(data, g) 
-        
-        score = compute_batched_kta(kernel_func, X, y, config.batch_size, rng)
-        push!(history, score)
+    for g in config.gamma_grid # Note: was gamma_range in your snippet, check struct def
+        K = exp.(-g .* D2)
+        score = kernel_target_alignment(K, y)
         
         if score > best_kta
             best_kta = score
             best_gamma = g
         end
     end
-    
-    return TuningResult(
-        TrainedRBFKernel(best_gamma),
-        best_kta,
-        history
-    )
-end
-
-# Helper for matrix generation
-function rbf_kernel_matrix(X, gamma)
-    D2 = pairwise(SqEuclidean(), X, dims=2)
-    return exp.(-gamma .* D2)
+    return TrainedRBFKernel(best_gamma)
 end

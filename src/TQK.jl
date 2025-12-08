@@ -82,7 +82,7 @@ export optimize_spsa
 export tune_kernel, tune_svm_c
 
 # experiment running
-export derive_rng
+export derive_rng, SALT_DATA_GEN, SALT_SVM_CV, SALT_TUNING
 export produce_data
 
 # Pauli Feature Map Functions

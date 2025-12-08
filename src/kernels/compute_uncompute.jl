@@ -40,13 +40,13 @@ Computes the full kernel matrix using the hardware-compatible method.
 WARNING: This is O(N^2) circuit evaluations. Slower than statevector method, but realistic.
 """
 function compute_kernel_matrix_hardware(config, params, X::AbstractMatrix)
-    n_samples = size(X, 1)
+    n_samples = size(X, 2)
     K = zeros(Float64, n_samples, n_samples)
     
     # We must loop because on hardware we can't "clone" states to do matrix multiplication.
     for i in 1:n_samples
         for j in i:n_samples # Exploit symmetry
-            val = compute_fidelity_hardware_compatible(config, params, view(X, i, :), view(X, j, :))
+            val = compute_fidelity_hardware_compatible(config, params, view(X, :, i), view(X, :, j))
             K[i, j] = val
             K[j, i] = val
         end
