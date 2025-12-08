@@ -58,11 +58,11 @@ A `NamedTuple` containing:
 # function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
 #     # extract DataConfig
 #     n_samples = data_config.n_samples
-#     n_support_vectors = data_config.data_params.n_support_vectors
-#     feature_range = data_config.data_params.feature_range 
-#     gamma = data_config.data_params.gamma
-#     alpha_range = data_config.data_params.alpha_range 
-#     bias_range = data_config.data_params.bias_range 
+#     n_support_vectors = data_config.params.n_support_vectors
+#     feature_range = data_config.params.feature_range 
+#     gamma = data_config.params.gamma
+#     alpha_range = data_config.params.alpha_range 
+#     bias_range = data_config.params.bias_range 
 #     seed = data_config.seed
 
 #     Random.seed!(seed)
@@ -133,10 +133,10 @@ A `NamedTuple` containing:
 function generate_pseudo_svm_dataset(data_config::DataConfig{RBFDataParams})
     # extract DataConfig
     n_samples = data_config.n_samples
-    n_support_vectors = data_config.data_params.n_support_vectors
-    feature_range = data_config.data_params.feature_range 
-    gamma = data_config.data_params.gamma
-    alpha_range = data_config.data_params.alpha_range 
+    n_support_vectors = data_config.params.n_support_vectors
+    feature_range = data_config.params.feature_range 
+    gamma = data_config.params.gamma
+    alpha_range = data_config.params.alpha_range 
     seed = data_config.seed
 
     Random.seed!(seed)

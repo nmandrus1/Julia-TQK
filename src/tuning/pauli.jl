@@ -1,4 +1,4 @@
-using Random
+using StableRNGs
 
 """
 Generate a random valid Pauli string set respecting constraints
@@ -38,24 +38,52 @@ function generate_constrained_pauli_set(
     return result
 end
 
+"""
+    tune_kernel(method::PauliMethod, X, y, config::TuningConfig)
 
-function tune_kernel(config::PauliMethod, X, y)
+Performs Random Search over the space of valid Pauli strings to maximize KTA.
+"""
+function tune_kernel(method::PauliMethod, X::AbstractMatrix, y::AbstractVector, config::TuningConfig)
+    rng = config.rng # Use the derived RNG
     best_kta = -Inf
-    best_paulis = nothing
     
-    for i in 1:config.n_search_iterations
-        # 1. Sample Structure
-        current_paulis = generate_constrained_pauli_set(config.constraints; rng=config.rng)
+    # Default fallback
+    best_paulis = ["Z" for _ in 1:method.n_features]
+    history = Float64[]
+
+    for i in 1:method.search_iterations
+        # 1. Sample Structure using the derived RNG
+        current_paulis = generate_constrained_pauli_set(method.constraints; rng=rng)
         
-        # 2. Build & Eval
-        # (Assuming you write a pure function for Pauli too)
-        K = compute_pauli_kernel_matrix(current_paulis, X)
-        score = kernel_target_alignment(K, y)
+        # 2. Define Kernel Function Closure
+        # compute_pauli_kernel_matrix must be defined in your feature_maps/pauli.jl
+        config = PauliConfig(
+                    n_features=method.n_features,
+                    paulis=current_paulis,
+                    reps=method.n_reps,
+                    ent=method.ent,
+                )
+
+        kernel_func(data) = compute_kernel_matrix_pure(config, data)
+        
+        # 3. Compute Score (Batched or Full)
+        score = compute_batched_kta(kernel_func, X, y, config.batch_size, rng)
+        push!(history, score)
         
         if score > best_kta
             best_kta = score
             best_paulis = current_paulis
         end
     end
-    return TrainedPauliKernel(best_paulis)
+    
+    return TuningResult(
+        TrainedPauliKernel(best_paulis, method.n_features),
+        best_kta,
+        history
+    )
+end
+
+# Implement the dispatch for the final matrix computation
+function compute_final_matrix(k::TrainedPauliKernel, X)
+    return compute_pauli_kernel_matrix(k.paulis, X)
 end

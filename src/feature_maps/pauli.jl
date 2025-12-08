@@ -196,3 +196,5 @@ function build_circuit(config::PauliConfig, params::AbstractVector, x::AbstractV
     # 2. Chain all repetitions together
     return chain(config.n_features, reps_circuits...)
 end
+
+
