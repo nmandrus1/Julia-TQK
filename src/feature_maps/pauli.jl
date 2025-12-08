@@ -113,78 +113,96 @@ function make_2q_gate(n::Int, idx1::Int, idx2::Int, gate_str::String, theta::Rea
         return rot(kron(n, idx1=>Y, idx2=>Y), theta)
     elseif gate_str == "ZZ"
         return rot(kron(n, idx1=>Z, idx2=>Z), theta)
-    elseif gate_str == "ZX"
-        return rot(kron(n, idx1=>Z, idx2=>X), theta)
-    elseif gate_str == "XZ"
-        return rot(kron(n, idx1=>X, idx2=>Z), theta)
+    # elseif gate_str == "ZX"
+    #     return rot(kron(n, idx1=>Z, idx2=>X), theta)
+    # elseif gate_str == "XZ"
+    #     return rot(kron(n, idx1=>X, idx2=>Z), theta)
     else
         return nothing 
     end
 end
 
-# --- Pure Helper: Basis Changes ---
+
+# --- Pure Helper: Basis Changes (CORRECTED) ---
 function basis_change_layer(n::Int, indices::Vector{Int}, gates::Vector{Char})
-    ops = map(zip(indices, gates)) do (idx, g)
+    # Filter and create ONLY the active gates
+    ops = AbstractBlock[]
+    for (idx, g) in zip(indices, gates)
         if g == 'X'
-            put(n, idx => H)
+            push!(ops, put(n, idx => H))
         elseif g == 'Y'
-            put(n, idx => Rx(π/2)) # SX
-        else
-            chain(n) # Identity
+            push!(ops, put(n, idx => Rx(π/2))) # SX
         end
+        # Ignore 'Z' or others (Identity)
     end
+    
+    # If ops is empty (e.g. all Z), chain(n) returns global Identity
+    if isempty(ops)
+        return chain(n)
+    end
+    
     return chain(n, ops...)
 end
 
 function inv_basis_change_layer(n::Int, indices::Vector{Int}, gates::Vector{Char})
-    ops = map(zip(indices, gates)) do (idx, g)
+    ops = AbstractBlock[]
+    for (idx, g) in zip(indices, gates)
         if g == 'X'
-            put(n, idx => H)
+            push!(ops, put(n, idx => H))
         elseif g == 'Y'
-            put(n, idx => Rx(-π/2)) # SXdg
-        else
-            chain(n)
+            push!(ops, put(n, idx => Rx(-π/2))) # SXdg
         end
     end
+
+    if isempty(ops)
+        return chain(n)
+    end
+    
     return chain(n, ops...)
 end
 
-# --- Pure Helper: Evolution Block ---
-# Now accepts explicit `indices` and `pauli_type` (e.g. "ZZ")
+# --- Pure Helper: Evolution Block (Fixed CNOT Direction) ---
+
+# --- Pure Helper: Evolution Block (Fixed CNOT Direction & Endianness) ---
 function pauli_evolution_block(n::Int, indices::Vector{Int}, pauli_type::String, theta::Real)
     
     k = length(indices)
-    gates = collect(pauli_type) # ['Z', 'Z']
+    
+    # FIX: Reverse the string to match Qiskit's Little-Endian (Right-to-Left) parsing
+    # "XZ" becomes ['Z', 'X']. zipped with [1, 2] -> Z on 1, X on 2.
+    gates = reverse(collect(pauli_type)) 
 
-    # Case 1: Single Qubit
+    # Case 1: Single Qubit (No ladder needed)
     if k == 1
         return make_1q_gate(n, indices[1], gates[1], theta)
     end
 
-    # Case 2: Two Qubit (Try Native)
-    if k == 2
-        native_gate = make_2q_gate(n, indices[1], indices[2], pauli_type, theta)
-        if !isnothing(native_gate)
-            return native_gate
-        end
-    end
-
-    # Case 3: General N-Qubit
+    # Case 2: Multi-Qubit (Generic Ladder Logic)
+    
+    # A. Basis Change
     basis = basis_change_layer(n, indices, gates)
     
-    # Linear CNOT Ladder
-    ladder_ops = [cnot(indices[i], indices[i+1]) for i in 1:(k-1)]
+    # B. CNOT Ladder (High -> Low)
+    # Qiskit Rust: (0..k-1).map(|i| CNOT(qubits[i+1], qubits[i]))
+    ladder_ops = [cnot(indices[i+1], indices[i]) for i in 1:(k-1)]
     ladder = chain(n, ladder_ops...)
     
-    # Rotation on last qubit
-    target_qubit = indices[end]
+    # C. Rotation
+    # Qiskit rotates the FIRST qubit in the chain
+    target_qubit = indices[1]
     rot_op = put(n, target_qubit => Rz(theta))
     
+    # D. Inverse Basis
     inv_basis = inv_basis_change_layer(n, indices, gates)
 
-    return chain(basis, ladder, rot_op, ladder', inv_basis)
+    return chain(
+        basis,
+        ladder,
+        rot_op,
+        ladder', # Uncompute
+        inv_basis
+    )
 end
-
 
 function pauli_feature_map(n_qubits::Int, x::AbstractVector, paulis::Vector{String}, 
                            reps::Int, ent::EntanglementStrategy, alpha::Real)

@@ -180,4 +180,131 @@ end
         
         @test check_unitary_equivalence(U_yao, U_qiskit)
     end
+
+    
+    @testset "Diagnostic: XX Only" begin
+        # Case D.1: 2 Qubits, Single XX interaction
+        # Qiskit uses RXX(theta) here. Yao uses H-CNOT-Rz-CNOT-H.
+        # They must match.
+        n = 2
+        x = rand(n)
+        config = PauliConfig(n, ["XX"]; reps=1, ent=LinearEntanglement)
+        
+        U_yao = mat(build_circuit(config, [], x))
+        U_qiskit = get_qiskit_matrix(config, x)
+        
+        @test check_unitary_equivalence(U_yao, U_qiskit)
+    end
+
+    
+    @testset "Diagnostic: XX Only" begin
+        # Case D.1: 2 Qubits, Single XX interaction
+        # Qiskit uses RXX(theta) here. Yao uses H-CNOT-Rz-CNOT-H.
+        # They must match.
+        n = 2
+        x = rand(n)
+        config = PauliConfig(n, ["XX"]; reps=1, ent=LinearEntanglement)
+        
+        U_yao = mat(build_circuit(config, [], x))
+        U_qiskit = get_qiskit_matrix(config, x)
+        
+        @test check_unitary_equivalence(U_yao, U_qiskit)
+    end
+
+    
+    @testset "Diagnostic: XZ Only" begin
+        # Case D.3: 2 Qubits, Single XZ interaction
+        # Just like ZX, but indices swapped. 
+        # X on q1, Z on q2.
+        n = 2
+        x = rand(n)
+        config = PauliConfig(n, ["XZ"]; reps=1, ent=LinearEntanglement)
+        
+        U_yao = mat(build_circuit(config, [], x))
+        U_qiskit = get_qiskit_matrix(config, x)
+        
+        @test check_unitary_equivalence(U_yao, U_qiskit)
+    end
+
+    @testset "Diagnostic: Ladder Parity" begin
+        n = 2
+        indices = [1, 2]
+        k = 2
+        
+        # Manually rebuild the ladder logic from pauli_evolution_block
+        ladder_ops = [cnot(indices[i+1], indices[i]) for i in 1:(k-1)]
+        blk = chain(n, ladder_ops...) # Should be cnot(2, 1)
+        
+        # Test Parity Logic: |00> -> |00>, |01> -> |01>, |10> -> |11>, |11> -> |10>
+        # (Remember Yao is Little Endian: q1 is LSB. 
+        # But indices=[1,2] means q1=1, q2=2. 
+        # State |q2 q1>. |10> means q2=1, q1=0).
+        
+        # Case A: Input |10> (q2=1, q1=0) -> Expect |11> (q2=1, q1=1)
+        reg = product_state(bit"10") |> blk
+        @test isapprox(statevec(reg)[4], 1.0) # Index 4 is |11>
+        
+        # Case B: Input |00> -> Expect |00>
+        reg = product_state(bit"00") |> blk
+        @test isapprox(statevec(reg)[1], 1.0)
+    end
+    
+    @testset "Diagnostic: Rotation Only" begin
+        n = 2
+        theta = π # Full rotation for easy checking (Z -> -Z)
+        
+        # Manually rebuild rotation logic
+        indices = [1, 2]
+        target_qubit = indices[1] # Qubit 1
+        rot_op = put(n, target_qubit => Rz(theta))
+                
+        # Apply to |00> (q1=0). Expect -i phase (wait, Rz definition)
+        # Yao Rz(theta) = exp(-i theta/2 Z).
+        # theta=pi -> exp(-i pi/2 Z) = -i Z.
+        # Z|0> = |0>. exp -> -i.
+        reg = product_state(bit"00") |> rot_op
+        @test isapprox(statevec(reg)[1], 0.0 - 1.0im)
+    end
+
+
+    @testset "Diagnostic: Deep Inspection" begin
+        println("\n--- DEEP INSPECTION ---")
+        n = 2
+        # Use a fixed X to ensure deterministic matrices
+        x = [0.5, 0.5] 
+        # "XZ": Qiskit likely does Z on q0, X on q1. Yao does X on q1, Z on q2.
+        config = PauliConfig(n, ["XZ"]; reps=1, ent=LinearEntanglement)
+        
+        # Build circuits
+        circ = build_circuit(config, [], x)
+        U_yao = mat(circ)
+        U_qiskit = get_qiskit_matrix(config, x)
+
+        println("Yao Block Structure:")
+        println(circ) 
+        
+        println("\nYao Matrix [1:2, 1:2]:")
+        display(U_yao[1:2, 1:2])
+        
+        println("\nQiskit Matrix [1:2, 1:2]:")
+        display(U_qiskit[1:2, 1:2])
+        
+        # If my hypothesis is right, these will look totally different.
+        @test !isapprox(U_yao, U_qiskit) # Expect failure
+    end    
+
+    
+    @testset "Final Verification: Endianness Fix" begin
+        # This previously failed with fidelity ~0.78
+        n = 2
+        x = rand(n)
+        # "XZ" -> Should now map to Z on 1, X on 2 (Matching Qiskit)
+        config = PauliConfig(n, ["XZ"]; reps=1, ent=LinearEntanglement)
+    
+        U_yao = mat(build_circuit(config, [], x))
+        U_qiskit = get_qiskit_matrix(config, x)
+    
+        @test check_unitary_equivalence(U_yao, U_qiskit)
+    end
+
 end
