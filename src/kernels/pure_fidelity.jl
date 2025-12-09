@@ -31,6 +31,7 @@ Computes the full kernel matrix K(X, X) where K_ij = |<ψ(x_i)|ψ(x_j)>|²
 Pure function: No buffers, no mutation.
 """
 function compute_kernel_matrix_pure(config::AbstractFeatureMapConfig, params::AbstractVector, X::AbstractMatrix)
+    @info "Computing kernel via simulation"
     # 1. Get all statevectors (Batch transformation)
     #    states is a Vector{ArrayReg}
     states = compute_statevectors(config, params, X)

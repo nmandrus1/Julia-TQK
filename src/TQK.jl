@@ -52,7 +52,7 @@ export AbstractDataParams, AbstractKernelMethod, AbstractTrainedKernel
 export DataConfig, RBFDataParams, QuantumPauliDataParams, ReuploadingDataParams
 export RBFMethod, PauliMethod, ReuploadingMethod
 export TrainedRBFKernel, TrainedPauliKernel, TrainedReuploadingKernel
-export ExperimentConfig
+export ExperimentConfig, ExperimentArtifacts
 
 # Export functions for feature maps
 export n_qubits, n_trainable_params, build_circuit

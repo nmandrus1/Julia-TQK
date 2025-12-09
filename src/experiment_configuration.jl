@@ -3,6 +3,7 @@ using DrWatson
 using StableRNGs
 using Random
 using Parameters # for @kwdef
+using Dates
 
 # ==========================================
 # 0. Reproducibility Core
@@ -140,8 +141,7 @@ Stores the specific Pauli strings found during the random search.
 Constraints are no longer needed here; just the result.
 """
 struct TrainedPauliKernel <: AbstractTrainedKernel
-    paulis::Vector{String}
-    n_qubits::Int
+    config::PauliConfig
 end
 
 """
@@ -190,22 +190,36 @@ DrWatson.default_prefix(c::ExperimentConfig) = "exp_$(c.name)"
 # 5. Artifact Container (Save Everything)
 # ==========================================
 
+"""
+    ExperimentArtifacts
+
+The master container for a single run. 
+Designed to be saved as a .jld2 file by DrWatson.
+"""
 struct ExperimentArtifacts
+    # 1. The Recipe (Crucial for reproducibility)
     config::ExperimentConfig
     
-    # Method Tuning Results
-    tuning_result::Any # Holds TuningResult from interface.jl
+    # 2. The Learning Journey
+    tuning_result::TuningResult  # Contains best params and loss history
     
-    # Final Model Analysis
-    kernel_matrix_train::Matrix{Float64}
-    kernel_matrix_test::Matrix{Float64}
+    # 3. The Geometry (For your Hypersphere research)
+    # We save the kernel matrices to analyze the distribution of dot products
+    K_train::Matrix{Float64}
+    K_test::Matrix{Float64}
     
-    # SVM Results
+    # 4. The Quantum State (Optional/Heavy)
+    # Save raw statevectors for manifold learning (PCA/t-SNE on the quantum state)
+    # WARNING: Only populated if n_qubits <= 14 to save disk space
+    train_statevectors::Union{Matrix{ComplexF64}, Nothing} 
+    
+    # 5. The Classical Model
     best_C::Float64
     svm_cv_acc::Float64
     train_acc::Float64
     test_acc::Float64
     
-    # Metadata
-    completed_at::String
+    # 6. Metadata
+    timestamp::DateTime
+    git_commit::String # DrWatson can fetch this automatically
 end

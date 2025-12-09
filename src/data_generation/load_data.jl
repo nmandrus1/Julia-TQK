@@ -37,8 +37,8 @@ function data_from_config(config::DataConfig{ReuploadingDataParams}; rng::Abstra
     feature_map = ReuploadingConfig(
         params.n_qubits, 
         params.n_features, 
-        params.n_layers, 
-        params.entanglement
+        params.n_layers;
+        entanglement=params.ent
     )
     
     # 2. Assign Teacher Parameters (Randomly)
@@ -66,16 +66,11 @@ end
 function data_from_config(config::DataConfig{QuantumPauliDataParams}; rng::AbstractRNG)
     params = config.params
 
-    pconfig = PauliConfig(
-                    n_features=params.n_features,
-                    paulis=params.paulis,
-                    reps=params.n_reps,
-                    ent=params.ent,
-            )
+    pconfig = PauliConfig(params.n_features, params.paulis; reps=params.reps, ent=params.ent)
     
     # Closure relying on your Qiskit/Sim interface
     # (Assuming compute_pauli_kernel_matrix_cpu is defined as we discussed)
-    pauli_closure(X, Y) = compute_kernel_matrix_pure(pconfig, X, Y)
+    pauli_closure(X, Y) = compute_kernel_matrix_pure(pconfig, [], X, Y)
     
     return generate_kernel_target_data(
         n_samples = config.n_samples,

@@ -50,6 +50,7 @@ function tune_kernel(method::PauliMethod, X::AbstractMatrix, y::AbstractVector, 
     
     # Default fallback
     best_paulis = ["Z" for _ in 1:method.n_features]
+    best_config = Nothing
     history = Float64[]
 
     for i in 1:method.search_iterations
@@ -58,14 +59,9 @@ function tune_kernel(method::PauliMethod, X::AbstractMatrix, y::AbstractVector, 
         
         # 2. Define Kernel Function Closure
         # compute_pauli_kernel_matrix must be defined in your feature_maps/pauli.jl
-        config = PauliConfig(
-                    n_features=method.n_features,
-                    paulis=current_paulis,
-                    reps=method.n_reps,
-                    ent=method.ent,
-                )
+        pconfig = PauliConfig(method.n_features,current_paulis; reps=method.n_reps, ent=method.ent)
 
-        kernel_func(data) = compute_kernel_matrix_pure(config, data)
+        kernel_func(data) = compute_kernel_matrix_pure(pconfig, [], data)
         
         # 3. Compute Score (Batched or Full)
         score = compute_batched_kta(kernel_func, X, y, config.batch_size, sample_rng)
@@ -74,11 +70,12 @@ function tune_kernel(method::PauliMethod, X::AbstractMatrix, y::AbstractVector, 
         if score > best_kta
             best_kta = score
             best_paulis = current_paulis
+            best_config = pconfig
         end
     end
     
     return TuningResult(
-        TrainedPauliKernel(best_paulis, method.n_features),
+        TrainedPauliKernel(best_config),
         best_kta,
         history
     )
@@ -86,5 +83,5 @@ end
 
 # Implement the dispatch for the final matrix computation
 function compute_final_matrix(k::TrainedPauliKernel, X)
-    return compute_pauli_kernel_matrix(k.paulis, X)
+    return compute_kernel_matrix_pure(k.config, [], X)
 end

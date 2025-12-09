@@ -69,7 +69,3 @@ function compute_final_matrix(k::TrainedReuploadingKernel, X)
     # We know exactly how to build the circuit because k.config is inside!
     return compute_kernel_matrix_hardware(k.config, k.params, X)
 end
-
-function compute_final_matrix(k::TrainedRBFKernel, X)
-    return rbf_kernel_matrix(X, k.gamma)
-end
