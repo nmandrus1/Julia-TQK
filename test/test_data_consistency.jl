@@ -1,16 +1,14 @@
-
 using Test
 using StableRNGs
 using TQK
 
-@testset "Data Consistency & Reproducibility" begin
-    
+@testset "Data Consistency & Reproducibility" begin    
     # Define a config
     dc = DataConfig(
         dataset_name="test_consistency",
         n_samples=50,
-        seed=12345,
-        params=RBFDataParams(gamma=0.5)
+        master_seed=UInt(42),
+        params=RBFDataParams(gamma=0.5),
     )
 
     # Test 1: Deterministic Generation
@@ -41,8 +39,8 @@ end
     y = rand([-1, 1], 100)
     
     # Two identical configs
-    rng_samp1 = derive_rng(42, TQK.SALT_DATA_SAMPLING)
-    rng_samp2 = derive_rng(42, TQK.SALT_DATA_SAMPLING)
+    rng_samp1 = derive_rng(UInt(42), TQK.SALT_DATAGEN)
+    rng_samp2 = derive_rng(UInt(42), TQK.SALT_DATAGEN)
     
     # Simulate batch selection
     batch1 = TQK.compute_batched_kta(x->x'*x, X, y, 10, rng_samp1)

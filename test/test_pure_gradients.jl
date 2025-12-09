@@ -17,7 +17,7 @@ using LinearAlgebra
     n_samples = 5
     
     # Random data and labels (+1/-1)
-    X = rand(n_samples, n_features)
+    X = rand(n_features, n_samples)
     y = sign.(randn(n_samples))
     
     # 2. Setup Config

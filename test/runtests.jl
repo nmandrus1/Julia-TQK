@@ -7,7 +7,7 @@ tests = [
     "test_pure_gradients.jl",
     "test_kernel_equivalence.jl",
     "verify_gradients_finite_diff.jl",
-    "test_spsa_training.jl"
+    "test_spsa_training.jl",
     "test_yao_pauli_feature_map.jl"
 ]
 

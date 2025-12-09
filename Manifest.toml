@@ -1864,7 +1864,7 @@ uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 version = "1.0.3"
 
 [[deps.TQK]]
-deps = ["ArgCheck", "BenchmarkTools", "CSV", "Combinatorics", "CondaPkg", "DataFrames", "Dates", "Distances", "Distributed", "DrWatson", "JLD2", "JSON3", "LIBSVM", "LanguageServer", "LinearAlgebra", "Logging", "MLUtils", "MultivariateStats", "NPZ", "PProf", "Parameters", "Plots", "ProfileView", "PythonCall", "RDatasets", "Random", "StableRNGs", "Statistics", "StatsBase", "StructTypes", "Tables", "Test", "Yao", "YaoAPI", "YaoBlocks", "Zygote"]
+deps = ["ArgCheck", "BenchmarkTools", "CSV", "ChainRulesCore", "Combinatorics", "CondaPkg", "DataFrames", "Dates", "Distances", "Distributed", "DrWatson", "JLD2", "JSON3", "LIBSVM", "LanguageServer", "LinearAlgebra", "Logging", "MLUtils", "MultivariateStats", "NPZ", "PProf", "Parameters", "Plots", "ProfileView", "PythonCall", "RDatasets", "Random", "StableRNGs", "Statistics", "StatsBase", "StructTypes", "Tables", "Test", "Yao", "YaoAPI", "YaoBlocks", "Zygote"]
 path = "."
 uuid = "efc8405c-6321-11f0-3375-f52ce379e5a0"
 version = "0.0.0"

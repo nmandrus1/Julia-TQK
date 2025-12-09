@@ -45,7 +45,7 @@ using LinearAlgebra
     
     # 5. Matrix Test
     #    Verify the full loop logic works
-    X_batch = rand(3, n_features)
+    X_batch = rand(n_features, 3)
     K1 = compute_kernel_matrix_pure(config, params, X_batch)
     K2 = compute_kernel_matrix_hardware(config, params, X_batch)
     

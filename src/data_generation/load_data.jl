@@ -1,7 +1,7 @@
 using MLUtils
 using MultivariateStats
 using StableRNGs
-using distances
+using Distances
 
 
 # Helper (or just use generic one directly in the closure)
@@ -90,11 +90,13 @@ end
 """
   Produces a Dictionary containing the Train/Test split of a given config  
 """
-function produce_data(config::DataConfig, rng::AbstractRNG)
+function produce_data(config::DataConfig)
+    rng = derive_rng(config.master_seed, SALT_DATAGEN)
+
     # NOTE: This is in COLUMN MAJOR format!!!!!
     data = data_from_config(config, rng=rng)
-    X = data[:X]
-    y = data[:y]
+    X = data["X"]
+    y = data["y"]
     
     # Split train/test
     (X_train_raw, y_train), (X_test_raw, y_test) = splitobs(rng, (X, y); at=(1 - config.test_size), shuffle=true)    
@@ -137,7 +139,6 @@ function prepare_data!(config::ExperimentConfig, rng::AbstractRNG)
     data, filepath = produce_or_load(
         produce_data,
         config.data_config,  # Pass as argument
-        rng,
         datadir("sims", config.data_config.data_params.dataset_type);
         suffix="jld2",
     )

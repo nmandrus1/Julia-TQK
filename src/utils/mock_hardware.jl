@@ -39,14 +39,14 @@ function hardware_compatible_loss(config, params, X, y, n_shots)
     # Note: KTA is expensive (N^2), so for SPSA validation we usually use 
     # a simpler loss or small batches, but we'll stick to KTA for consistency.
     
-    n_samples = size(X, 1)
+    n_samples = size(X, 2)
     K_empirical = zeros(n_samples, n_samples)
     
     for i in 1:n_samples
         for j in i:n_samples
             # 1. Build Circuit U = U†(x) U(y)
-            U_x = build_circuit(config, params, view(X, i, :))
-            U_y = build_circuit(config, params, view(X, j, :))
+            U_x = build_circuit(config, params, view(X, :, i))
+            U_y = build_circuit(config, params, view(X, :, j))
             circuit = chain(U_y, adjoint(U_x))
             
             # 2. Run on "Hardware"

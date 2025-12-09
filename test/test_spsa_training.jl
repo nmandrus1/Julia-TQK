@@ -16,6 +16,8 @@ function spsa_gradient_estimate(loss_fn, params, c)
     return (loss_plus - loss_minus) ./ (2 * c * delta)
 end
 
+MASTER_SEED::UInt = 42
+
 @testset "SPSA Robust Verification" begin
 
     # ==========================================
@@ -26,10 +28,11 @@ end
         # Target: [1.0, 1.0]
         quad_loss(x) = sum((x .- 1.0).^2)
         
-        config = SPSAConfig(seed=42, max_iter=300, a=1.0, c=0.1, A=10.0)
+        config = SPSAConfig(max_iter=300, a=1.0, c=0.1, A=10.0)
         init_params = [0.0, 0.0]
         
-        final_params, history = optimize_spsa(quad_loss, init_params, config)
+        optimizer_rng = derive_rng(MASTER_SEED, SALT_OPTIMIZER)
+        final_params, history = optimize_spsa(quad_loss, init_params, config, optimizer_rng)
         
         # Should be very close to exact solution
         # initial loss is 2, so getting to a loss of 0.01 from
@@ -84,25 +87,25 @@ end
     # Why: Proves we can descend the TRUE landscape using only NOISY measurements
     # ==========================================
     @testset "Noisy Optimization Descent" begin
-        n_qubits = 2
-        X = [0.0 0.0; 0.5 0.5]
-        y = [-1.0, 1.0]
-        config = ReuploadingConfig(n_qubits, 2, 1)
-        params = randn(config.total_params)
+        n_features = 3
+        X = [0.0 0.5 0.7 ; 0.0 0.5 0.7; 0.0 0.5 0.7]
+        y = [-1.0, 1.0, 1.0]
+        config = ReuploadingConfig(2, 3, 1)
+        optimizer_rng = derive_rng(MASTER_SEED, SALT_OPTIMIZER)
+
+        params = randn(optimizer_rng, n_trainable_params(config))
         
         # The optimizer sees NOISY loss
         noisy_loss(p) = hardware_compatible_loss(config, p, X, y, 100)
         
         # We verify progress against TRUE loss
-        true_loss(p) = variational_kta_loss(config, p, X, y)
-        
-        start_true_loss = true_loss(params)
+        start_true_loss = variational_kta_loss(config, params, X, y)
         
         # Run SPSA
-        spsa_conf = SPSAConfig(seed=42, max_iter=50, a=1.0, c=0.1)
-        final_params, history = optimize_spsa(noisy_loss, params, spsa_conf)
+        spsa_conf = SPSAConfig(max_iter=50, a=1.0, c=0.1)
+        final_params, history = optimize_spsa(noisy_loss, params, spsa_conf, optimizer_rng)
         
-        end_true_loss = true_loss(final_params)
+        end_true_loss = variational_kta_loss(config, final_params, X, y)
         
         println("Start True Loss: $start_true_loss")
         println("End True Loss:   $end_true_loss")

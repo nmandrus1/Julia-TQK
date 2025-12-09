@@ -329,9 +329,9 @@ end
     # --- 2. The Verification Test ---
     @testset "Pauli KTA Gradient Verification" begin
         # Data Setup
-        n_qubits = 2
+        n_features = 2
         n_samples = 4
-        X = rand(n_samples, n_qubits) # Random features
+        X = rand(n_features, n_samples) # Random features
         y = sign.(randn(n_samples))   # Random labels (+1/-1)
     
         # Initial Alpha (The parameter we want to optimize)
@@ -341,7 +341,7 @@ end
         # We must reconstruct the config inside the function so Zygote sees 
         # 'a' as a variable entering the graph.
         function loss_fn(a)
-            c = PauliConfig(n_qubits, ["Z", "ZZ"]; reps=1, alpha=a)
+            c = PauliConfig(n_features, ["Z", "ZZ"]; reps=1, alpha=a)
             # Pass empty [] for params, as standard Pauli has no trainable weights yet
             return variational_kta_loss(c, [], X, y)
         end

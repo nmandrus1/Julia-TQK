@@ -40,7 +40,7 @@ end
     n_layers = 2 # slightly deeper to ensure chain rule works through layers
     n_samples = 3 # keep small for speed
     
-    X = rand(n_samples, n_features)
+    X = rand(n_features, n_samples)
     y = sign.(randn(n_samples))
     
     config = ReuploadingConfig(n_qubits, n_features, n_layers)

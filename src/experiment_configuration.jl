@@ -43,6 +43,7 @@ Configuration for the 'Teacher' dataset generation.
     n_samples::Int = 100
     n_features::Int = 2
     test_size::Float64 = 0.2
+    master_seed::UInt
     params::P
 end
 
