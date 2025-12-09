@@ -12,25 +12,28 @@ function run_demo()
     # ---------------------------------------------------------
     # 1. Setup: Define a Teacher (Data) and a Student (Method)
     # ---------------------------------------------------------
+
+    master_seed::UInt = 998
     
     # Teacher: A simple RBF dataset
     data_conf = DataConfig(
         dataset_name="demo_rbf_data", 
-        n_samples=100, 
+        n_samples=1000, 
         params=RBFDataParams(gamma=2.0),
+        master_seed=master_seed
     )
 
     # Student: Reuploading Quantum Kernel
     method_conf = ReuploadingMethod(
         name="student_reup",
-        circuit_config=ReuploadingConfig(2, 2, 2; entanglement=FullEntanglement),
-        optimizer=SPSAConfig(max_iter=200, seed=0)
+        circuit_config=ReuploadingConfig(4, 2, 2; entanglement=FullEntanglement),
+        optimizer=SPSAConfig(max_iter=200, n_resamples=10, c=0.1, a=0.8)
     )
 
     # Master Config
     exp_config = ExperimentConfig(
         name="demo_run",
-        master_seed=UInt(998),
+        master_seed=master_seed,
         data_config=data_conf,
         method=method_conf,
         tuning_batch_size=50, # Force batching to test it
@@ -50,7 +53,7 @@ function run_demo()
     # In a real run, you'd call produce_data(data_conf). 
     # For this demo, assuming produce_data exists and returns Dict:
     # (Mocking return for demo if produce_data isn't loaded yet)
-    data = produce_data(data_conf, rng_datagen) 
+    data = produce_data(data_conf) 
     X_train, y_train = data["X_train"], data["y_train"]
     X_test, y_test = data["X_test"], data["y_test"]
     println("   Data Shapes: X=$(size(X_train)), y=$(size(y_train))")
