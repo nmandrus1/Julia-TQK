@@ -20,7 +20,7 @@ function data_from_config(config::DataConfig{RBFDataParams}; rng::AbstractRNG)
     
     return generate_kernel_target_data(
         n_samples = config.n_samples,
-        n_features = 2, # Fixed for this specific dataset type? Or derived?
+        n_features = config.n_features, # Fixed for this specific dataset type? Or derived?
         n_support_vectors = params.n_support_vectors,
         kernel_fn = rbf_closure,
         rng = rng,

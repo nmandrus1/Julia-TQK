@@ -10,6 +10,8 @@ using Base.Threads
 
 # Include implementation files
 include("feature_maps/types.jl")
+include("core_types.jl")
+include("tuning/interface.jl")
 
 # SPSA
 include("optimizers/spsa.jl")
@@ -20,7 +22,6 @@ include("feature_maps/pauli.jl")
 # experiment configuration (many types declared here)
 include("experiment_configuration.jl")
 
-include("tuning/interface.jl")
 include("tuning/rbf.jl")
 include("tuning/pauli.jl")
 include("tuning/reuploading.jl")

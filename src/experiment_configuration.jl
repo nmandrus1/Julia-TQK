@@ -32,7 +32,6 @@ const SALT_SVM_CV::Int      = 4004
 # ==========================================
 # 1. Data Configuration
 # ==========================================
-abstract type AbstractDataParams end
 
 """
     DataConfig
@@ -81,7 +80,6 @@ end
 # ==========================================
 # 2. Kernel Method Blueprints (The "Student")
 # ==========================================
-abstract type AbstractKernelMethod end
 
 # --- RBF Method ---
 @kwdef struct RBFMethod <: AbstractKernelMethod
@@ -117,13 +115,6 @@ end
 # ==========================================
 # 3. Trained Kernel Artifacts (The "Learned Knowledge")
 # ==========================================
-
-"""
-Abstract parent for all trained kernels. 
-Any subtype T must support a dispatch:
-    compute_kernel_matrix(kernel::T, X)
-"""
-abstract type AbstractTrainedKernel end
 
 """
     TrainedRBFKernel

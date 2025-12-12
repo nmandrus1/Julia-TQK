@@ -4,37 +4,6 @@ using StatsBase
 using StableRNGs
 
 """
-    TuningConfig
-
-Controls the execution of the kernel tuning process (not the hyperparameters themselves).
-Allows for batched KTA calculation to speed up optimization on large datasets or slow hardware.
-"""
-
-"""
-    TuningConfig
-
-- `sampling_rng`: Used ONLY for selecting data batches.
-- `optimizer_rng`: Used for algorithm stochasticity (e.g., SPSA perturbations).
-- `batch_size`:  0 = Full dataset. >0 = Random batch per step.
-"""
-@kwdef struct TuningConfig
-    sampling_rng::AbstractRNG
-    optimizer_rng::AbstractRNG
-    batch_size::Int = 0 
-end
-
-"""
-    TuningResult{T}
-
-Standardized output for all tuning methods.
-"""
-struct TuningResult{T <: AbstractTrainedKernel}
-    best_params::T              # The optimal kernel parameters (e.g., Gamma, PauliString, Thetas)
-    best_score::Float64         # The best KTA score achieved
-    history::Vector{Float64}    # The history of scores (or loss) during optimization
-end
-
-"""
     tune_kernel(method::AbstractKernelMethod, X, y, config::TuningConfig) -> TuningResult
 
 Abstract interface. Must be implemented by each method.
@@ -62,10 +31,4 @@ function compute_batched_kta(kernel_fn::Function, X::AbstractMatrix, y::Abstract
         K_batch = kernel_fn(X_batch)
         return kernel_target_alignment(K_batch, y_batch)
     end
-end
-
-
-function compute_final_matrix(k::TrainedReuploadingKernel, X)
-    # We know exactly how to build the circuit because k.config is inside!
-    return compute_kernel_matrix_hardware(k.config, k.params, X)
 end
